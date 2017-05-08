@@ -5,9 +5,9 @@ import std.stdio;
 //import dcompress.file;
 import d_zlib = dcompress.zlib;
 
-import std.zlib : std_compress = compress;
-import std.algorithm : joiner;
-import std.array : array;
+import std_zlib = std.zlib;
+import std.algorithm : map, joiner;
+import std.array : array, join;
 
 void main() {
 /+
@@ -35,24 +35,35 @@ void main() {
     //
     //auto bz2File = CompressedFile!Bz2("test.bz2");
 
-    auto comp = d_zlib.Compressor(1024);
-    auto data = ["aaa", "bbb", "ccc", "dafasdfadfaf", "dfadfa", "adfaf" ];
-    ubyte[] output;
 
-    auto c2 = d_zlib.Compressor(1024);
-    auto o = c2.compress(data.joiner.array).dup;
-    o ~= c2.flush();
-    writeln(o);
-    foreach (chunk; data)
+    immutable data = ["aaa", "bbb", "ccc", "dafasdfadfaf", "dfadfa", "adfaf" ];
     {
-        output ~= cast(ubyte[]) comp.compress(chunk);
-        while (!comp.needsInput)
-            output ~= cast(ubyte[])comp.continueCompress();
+        auto comp = d_zlib.Compressor(1024);
+        ubyte[] output;
+        foreach (chunk; data)
+        {
+            output ~= cast(ubyte[]) comp.compress(chunk);
+            while (!comp.needsInput)
+                output ~= cast(ubyte[])comp.continueCompress();
+        }
+        do
+            output ~= cast(ubyte[])comp.flush();
+        while (comp.outputAvailableFlush);
+        writeln(output);
     }
-    do
-        output ~= cast(ubyte[])comp.flush();
-    while (comp.outputAvailableFlush);
-    writeln(output);
-
-    writeln(std_compress(data.joiner.array));
+    {
+        auto c2 = d_zlib.Compressor(1024);
+        auto o = cast(ubyte[]) c2.compress(data.dup.joiner.array).dup;
+        o ~= cast(ubyte[]) c2.flush();
+        writeln(o);
+    }
+    {
+        writeln(std_zlib.compress(data.dup.joiner.array));
+    }
+    {
+        auto comp = new std_zlib.Compress;
+        ubyte[] output = data.map!(chunk => cast(ubyte[])comp.compress(chunk.dup)).join;
+        output ~= cast(ubyte[]) comp.flush();
+        writeln(output);
+    }
 }
