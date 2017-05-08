@@ -1,6 +1,8 @@
-import primitives;
+module dcompress.bz2;
 
-/+ decompress +/
+import dcompress.primitives;
+
+/+ compress +/
 
 void[] compress(const(void)[] data)
 {

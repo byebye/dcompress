@@ -1,3 +1,5 @@
+module dcompress.primitives;
+
 import std.range.primitives : isInputRange, isOutputRange, ElementType;
 
 public:

@@ -1,6 +1,8 @@
-import primitives;
+module dcompress.lzma;
 
-/+ decompress +/
+import dcompress.primitives;
+
+/+ compress +/
 
 void[] compress(const(void)[] data)
 {
