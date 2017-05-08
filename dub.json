@@ -1,0 +1,9 @@
+{
+    "name": "dcompress",
+    "description": "A compression library for D programming language.",
+    "authors": ["Jakub Łabaj"],
+    "homepage": "https://github.com/byebye/dcompress",
+    "license": "",
+    "dependencies": {}
+}
+
