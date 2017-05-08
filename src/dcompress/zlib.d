@@ -63,14 +63,13 @@ private:
     ubyte[] _buffer;
     bool _outputPending;
 
-    int getWindowBits(CompressionEncoding encoding)
+    int getWindowBitsValue(int windowBits, CompressionEncoding encoding)
     {
-        switch (encoding)
+        final switch (encoding)
         {
-            case CompressionEncoding.deflate: return 15;
-            case CompressionEncoding.rawDeflate: return -15;
-            case CompressionEncoding.gzip: return 31;
-            default: return 15;
+            case CompressionEncoding.deflate: return windowBits;
+            case CompressionEncoding.rawDeflate: return -windowBits;
+            case CompressionEncoding.gzip: return 16 + windowBits;
         }
     }
 
@@ -90,8 +89,25 @@ private:
         }
     }
 
-    void initZlibStream(CompressionEncoding encoding, int compressionLevel)
+public:
+
+    @disable this();
+
+    this(uint bufferSize,
+        CompressionEncoding encoding = CompressionEncoding.deflate,
+        int compressionLevel = CompressionLevel.default_,
+        int windowBits = 15,
+        int memoryLevel = 8,
+        CompressionStrategy strategy = CompressionStrategy.default_)
+    in
     {
+        assert (-1 <= compressionLevel && compressionLevel <= 9);
+        assert (9 <= windowBits && windowBits <= 15);
+        assert (1 <= memoryLevel && memoryLevel <= 9);
+    }
+    body
+    {
+        _buffer = new ubyte[bufferSize];
         // int deflateInit2(z_streamp strm, int level, int method, int windowBits, int memLevel, int strategy);
         // * windowsBits:
         //     default = 15
@@ -107,29 +123,11 @@ private:
         //     (1 << (windowBits+2)) + (1 << (memLevel+9)) + 'a few'KB
         // The memory requirements for inflate are (in bytes):
         //     1 << windowBits + ~7KB
-        immutable windowBits = getWindowBits(encoding);
-        immutable memoryLevel = 8;
-        immutable status = c_zlib.deflateInit2(&_zlibStream, compressionLevel, 
+        immutable windowBitsValue = getWindowBitsValue(windowBits, encoding);
+        immutable status = c_zlib.deflateInit2(&_zlibStream, compressionLevel,
             CompressionMethod.deflate,
-            windowBits, memoryLevel, CompressionStrategy.default_);
+            windowBitsValue, memoryLevel, strategy);
         checkForError(status);
-    }
-
-public:
-
-    @disable this();
-
-    this(uint bufferSize,
-        CompressionEncoding encoding = CompressionEncoding.deflate,
-        int compressionLevel = CompressionLevel.default_)
-    in
-    {
-        assert (-1 <= compressionLevel && compressionLevel <= 9);
-    }
-    body
-    {
-        _buffer = new ubyte[bufferSize];
-        initZlibStream(encoding, compressionLevel);
     }
 
     ~this()
