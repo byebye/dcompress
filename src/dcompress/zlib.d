@@ -61,6 +61,7 @@ private:
 
     c_zlib.z_stream _zlibStream;
     ubyte[] _buffer;
+    bool _outputPending;
 
     int getWindowBits(CompressionEncoding encoding)
     {
@@ -96,8 +97,8 @@ private:
         //     default = 15
         //     8 - not supported
         //     9..15 - base 2 log of the window size
-        //     -8..-15 - raw deflate, without zlib header or trailer and no crc
-        //     27..31 = 16 + (9..15) - low 4 bits of the value is the window size log,
+        //     -9..-15 - raw deflate, without zlib header or trailer and no crc
+        //     25..31 = 16 + (9..15) - low 4 bits of the value is the window size log,
         //                             while including a basic gzip header and trailing checksum
         // * memLevel:
         //     default = 8
@@ -115,6 +116,8 @@ private:
     }
 
 public:
+
+    @disable this();
 
     this(uint bufferSize,
         CompressionEncoding encoding = CompressionEncoding.deflate,
@@ -136,30 +139,24 @@ public:
         // GC.free(_buffer.ptr);
     }
 
-    @property bool outputAvailableCompress() const
+    @property bool outputPending() const
+    {
+        return _outputPending;
+    }
+
+    @property uint bytesPending() const
     {
         uint bytes;
         // Casting away const here is safe as deflatePending does not modify the stream.
         immutable status = c_zlib.deflatePending(cast(c_zlib.z_stream*)&_zlibStream, &bytes, null);
         // This structure ensures a consistent state of the stream.
         assert (status == ZlibStatus.ok);
-        return bytes > 0;
-    }
-
-    @property bool outputAvailableFlush() const
-    {
-        uint bytes;
-        int bits;
-        // Casting away const here is safe as deflatePending does not modify the stream.
-        immutable status = c_zlib.deflatePending(cast(c_zlib.z_stream*)&_zlibStream, &bytes, &bits);
-        // This structure ensures a consistent state of the stream.
-        assert (status == ZlibStatus.ok);
-        return (bytes > 0 || bits > 0);
+        return bytes;
     }
 
     @property bool needsInput() const
     {
-        return _zlibStream.avail_in == 0 && !outputAvailableCompress;
+        return _zlibStream.avail_in == 0 && !outputPending;
     }
 
     const(void)[] compress(const(void)[] data)
@@ -172,10 +169,20 @@ public:
     {
         _zlibStream.next_in = cast(const(ubyte)*) data.ptr;
         _zlibStream.avail_in = cast(uint) data.length; // TODO check for overflow
-        return continueCompress();
+        return compress(FlushMode.noFlush);
     }
 
-    const(void)[] continueCompress(FlushMode mode = FlushMode.noFlush)
+    const(void)[] compressPending()
+    {
+        return compress(FlushMode.noFlush);
+    }
+
+    const(void)[] flush(FlushMode mode = FlushMode.finish)
+    {
+        return compress(mode);
+    }
+
+    private const(void)[] compress(FlushMode mode)
     {
         _zlibStream.next_out = _buffer.ptr;
         _zlibStream.avail_out = cast(uint) _buffer.length;
@@ -185,11 +192,19 @@ public:
         // * ZlibStatus.streamEnd -- all input has been consumed and all output has been produced (only when mode == FlushMode.finish)
         immutable status = c_zlib.deflate(&_zlibStream, mode);
 
-        if (status != ZlibStatus.ok)
+        if (status == ZlibStatus.ok)
+            _outputPending = (_zlibStream.avail_out == 0 && bytesPending > 0);
+        else
         {
             // TODO Think whether output buffer can be corrupted.
-            if (mode == FlushMode.noFlush && status != ZlibStatus.bufferError
-                || mode == FlushMode.finish && status != ZlibStatus.streamEnd)
+            assert (status != ZlibStatus.bufferError);
+
+            if (status == ZlibStatus.streamEnd)
+            {
+                _outputPending = false;
+                // TODO deflateReset or deflateEnd
+            }
+            else
             {
                 import std.conv : to;
                 throwException(to!ZlibStatus(status));
@@ -198,10 +213,5 @@ public:
 
         immutable writtenBytes = _buffer.length - _zlibStream.avail_out;
         return _buffer[0 .. writtenBytes];
-    }
-
-    const(void)[] flush(FlushMode mode = FlushMode.finish)
-    {
-        return continueCompress(mode);
     }
 }

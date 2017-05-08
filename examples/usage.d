@@ -38,17 +38,19 @@ void main() {
 
     immutable data = ["aaa", "bbb", "ccc", "dafasdfadfaf", "dfadfa", "adfaf" ];
     {
-        auto comp = d_zlib.Compressor(1024);
+        auto comp = d_zlib.Compressor(2);
         ubyte[] output;
         foreach (chunk; data)
         {
             output ~= cast(ubyte[]) comp.compress(chunk);
-            while (!comp.needsInput)
-                output ~= cast(ubyte[])comp.continueCompress();
+            while (comp.outputPending)
+                output ~= cast(ubyte[])comp.compressPending();
         }
         do
+        {
             output ~= cast(ubyte[])comp.flush();
-        while (comp.outputAvailableFlush);
+        }
+        while (comp.outputPending);
         writeln(output);
     }
     {
