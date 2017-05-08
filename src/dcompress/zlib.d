@@ -176,24 +176,6 @@ public:
     }
 
     const(void)[] continueCompress(FlushMode mode = FlushMode.noFlush)
-    out
-    {
-        //if (mode == FlushMode.noFlush)
-        //{
-        //    if (status == ZlibStatus.bufferError)
-        //        assert (needsInput && _zlibStream.avail_out == _buffer.length); // No data could be produced.
-        //    else
-        //        assert (status == ZlibStatus.ok);
-        //}
-        //else if (mode == FlushMode.finish)
-        //{
-        //    if (status == ZlibStatus.ok)
-        //        assert (_zlibStream.avail_out == _buffer.length);
-        //    else
-        //        assert (status == ZlibStatus.streamEnd && needsInput);
-        //}
-    }
-    body
     {
         _zlibStream.next_out = _buffer.ptr;
         _zlibStream.avail_out = cast(uint) _buffer.length;
@@ -205,7 +187,7 @@ public:
 
         if (status != ZlibStatus.ok)
         {
-            // TODO Think whether output buffer can be corrupted and update the 'out' contract accordingly.
+            // TODO Think whether output buffer can be corrupted.
             if (mode == FlushMode.noFlush && status != ZlibStatus.bufferError
                 || mode == FlushMode.finish && status != ZlibStatus.streamEnd)
             {
