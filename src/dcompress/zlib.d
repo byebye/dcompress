@@ -154,11 +154,15 @@ public:
         immutable status = c_zlib.deflatePending(cast(c_zlib.z_stream*)&_zlibStream, &bytes, &bits);
         // This structure ensures a consistent state of the stream.
         assert (status == ZlibStatus.ok);
+        //import std.stdio : writefln;
+        //writefln("bytes = %d, bits: %d",bytes, bits);
         return (bytes > 0 || bits > 0);
     }
 
     @property bool needsInput() const
     {
+        //import std.stdio : writefln;
+        //writefln("avail_in = %d, output available: %s",_zlibStream.avail_in, outputAvailableCompress);
         return _zlibStream.avail_in == 0 && !outputAvailableCompress;
     }
 
@@ -183,7 +187,12 @@ public:
         // * ZlibStatus.ok -- progress has been made
         // * ZlibStatus.bufferError -- no progress possible
         // * ZlibStatus.streamEnd -- all input has been consumed and all output has been produced (only when mode == FlushMode.finish)
+        import std.stdio : writefln;
+        import std.conv :to;
+        //writefln("--> avail_in = %d, avail_out: %d",_zlibStream.avail_in, _zlibStream.avail_out);
         immutable status = c_zlib.deflate(&_zlibStream, mode);
+
+        //writefln("<-- avail_in = %d, avail_out: %d, status: %s",_zlibStream.avail_in, _zlibStream.avail_out, to!ZlibStatus(status));
 
         if (status != ZlibStatus.ok)
         {
@@ -197,6 +206,8 @@ public:
         }
 
         immutable writtenBytes = _buffer.length - _zlibStream.avail_out;
+        //import std.stdio : writefln;
+        //writefln("Returning: %s", _buffer[0 .. writtenBytes]);
         return _buffer[0 .. writtenBytes];
     }
 
