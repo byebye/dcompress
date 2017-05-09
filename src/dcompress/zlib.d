@@ -1,19 +1,31 @@
+/++
+ + Provides compressing and decompressing abstractions built on top of
+ + the $(LINK2 http://www.zlib.net, zlib library).
+ +
+ + Authors: Jakub Łabaj, uaaabbjjkl@gmail.com
+ +/
 module dcompress.zlib;
 
 import c_zlib = etc.c.zlib;
 
+/++
+ + Modifies behavior of `Compressor.flush`.
+ +/
 enum FlushMode
 {
-    noFlush = c_zlib.Z_NO_FLUSH,
-    partial = c_zlib.Z_PARTIAL_FLUSH,
-    sync    = c_zlib.Z_SYNC_FLUSH,
-    full    = c_zlib.Z_FULL_FLUSH,
-    finish  = c_zlib.Z_FINISH,
-    block   = c_zlib.Z_BLOCK,
-    trees   = c_zlib.Z_TREES,
+    noFlush = c_zlib.Z_NO_FLUSH, ///
+    partial = c_zlib.Z_PARTIAL_FLUSH, ///
+    sync    = c_zlib.Z_SYNC_FLUSH, ///
+    full    = c_zlib.Z_FULL_FLUSH, ///
+    finish  = c_zlib.Z_FINISH, ///
+    block   = c_zlib.Z_BLOCK, ///
+    trees   = c_zlib.Z_TREES, ///
 }
 
-enum ZlibStatus
+/++
+ + Status codes returned by zlib library.
+ +/
+private enum ZlibStatus
 {
     ok = c_zlib.Z_OK,
     streamEnd = c_zlib.Z_STREAM_END,
@@ -26,35 +38,75 @@ enum ZlibStatus
     libVersionError = c_zlib.Z_VERSION_ERROR,
 }
 
-enum CompressionMethod
+/++
+ + Compression methods supported by zlib library.
+ +/
+private enum CompressionMethod
 {
     deflate = c_zlib.Z_DEFLATED,
 }
 
+/++
+ + Selection of compression levels for convenience,
+ + in fact all values from `-1` to `9` are supported.
+ +/
 enum CompressionLevel
 {
-    noCompression = c_zlib.Z_NO_COMPRESSION,
-    bestSpeed = c_zlib.Z_BEST_SPEED,
-    bestCompression = c_zlib.Z_BEST_COMPRESSION,
-    default_ = c_zlib.Z_DEFAULT_COMPRESSION,
+    noCompression = c_zlib.Z_NO_COMPRESSION, ///
+    bestSpeed = c_zlib.Z_BEST_SPEED, ///
+    bestCompression = c_zlib.Z_BEST_COMPRESSION, ///
+    default_ = c_zlib.Z_DEFAULT_COMPRESSION, ///
 }
 
+/++
+ + Compression strategies used to tune the compression algorithm.
+ +/
 enum CompressionStrategy
 {
+    /// Best for data produced by a filter i.e. consisting mostly of small
+    /// values with a somewhat random distribution. Forces more Huffman coding
+    /// and less string matching, lies between `default_` and `huffmanOnly` strategies.
     filtered = c_zlib.Z_FILTERED,
-    huffman = c_zlib.Z_HUFFMAN_ONLY,
+    /// Forces Huffman encoding only, disabling entirely string matching.
+    huffmanOnly = c_zlib.Z_HUFFMAN_ONLY,
+    /// Designed to be almost as fast as `huffmanOnly`, but gives better compression
+    /// for `PNG` image data.
     rle = c_zlib.Z_RLE,
+    /// Prevents the use of dynamic Huffman codes, allowing for a simpler decoder
+    /// for special applications.
     fixed = c_zlib.Z_FIXED,
+    /// Default strategy for regular data.
     default_ = c_zlib.Z_DEFAULT_STRATEGY,
 }
 
-enum CompressionEncoding
+/++
+ + Supported headers for the compressed data.
+ +
+ + The library supports only one compression method called `deflate`, which may
+ + be wrapped around with `zlib` or `gzip` headers.
+ + The `zlib` format was designed to be compact and fast, for use in memory and
+ + on communications channels, makes use of `Adler-32` for integrity check.
+ + The `gzip` format was designed for a single file compression on file systems,
+ + has a larger header than `zlib` to maintain file information, and uses
+ + a slower `CRC-32` check method.
+ +/
+enum DataHeader
 {
-    deflate,
+    /// zlib wrapper around a deflate stream. See the specification
+    /// $(LINK2 https://tools.ietf.org/html/rfc1950, RFC 1950).
+    zlib,
+    /// Raw deflate stream, without any header or check value. See the
+    /// specification $(LINK2 https://tools.ietf.org/html/rfc1951, RFC 1951).
     rawDeflate,
+    /// gzip wrapper around a deflate stream. See the specification
+    /// $(LINK2 https://tools.ietf.org/html/rfc1952, RFC 1952).
     gzip,
 }
 
+/++
+ + A structure used to compress data incrementally.
+ + For one-shot compression, use `dcompress.zlib.compress` function.
+ +/
 struct Compressor
 {
 private:
@@ -63,13 +115,13 @@ private:
     ubyte[] _buffer;
     bool _outputPending;
 
-    int getWindowBitsValue(int windowBits, CompressionEncoding encoding)
+    int getWindowBitsValue(int windowBits, DataHeader header)
     {
-        final switch (encoding)
+        final switch (header)
         {
-            case CompressionEncoding.deflate: return windowBits;
-            case CompressionEncoding.rawDeflate: return -windowBits;
-            case CompressionEncoding.gzip: return 16 + windowBits;
+            case DataHeader.zlib: return windowBits;
+            case DataHeader.rawDeflate: return -windowBits;
+            case DataHeader.gzip: return 16 + windowBits;
         }
     }
 
@@ -93,8 +145,35 @@ public:
 
     @disable this();
 
+    /++
+     + Creates a compressor with the given settings.
+     +
+     + Params:
+     + bufferSize = The internal buffer size in bytes. Indicates the upper limit
+     +              of compressed data that may be returned by one call to
+     +              `compress` and `flush`.
+     + header = Header to use for the compressed data. See `DataHeader` for details.
+     + compressionLevel = A number between `-1` and `9`: `0` indicates no
+     +                    compression at all, `1` gives the best speed but poor
+     +                    compression, `9` gives the best compression, but is slow,
+     +                    `-1` is a default compromise between speed and compression
+     +                    (currently equivalent to level 6).
+     + windowBits = Controls the size of the history buffer (i.e. window size)
+     +              used when compressing data. It is the base `2` logarithm of
+     +              window size. Must be a number from `9` (`512`-byte window)
+     +              to `15` (`32`KB window - default).
+     + memoryLevel = Specifies how much memory should be allocated for the
+     +               internal compression state of the zlib library. Must be
+     +               a number from `1` - uses minimum memory but is slow and
+     +               reduces compression ratio, to `9` - using maximum memory
+     +               for the best speed and compression. The default value
+     +               is `8`. The approximate memory requirements are (in bytes):
+     +               `(1 << (windowBits+2)) + (1 << (memLevel+9))` plus a few
+     +               kilobytes for small objects.
+     + strategy = Tunes the compression algorithm. See `CompressionStrategy` for details.
+     +/
     this(uint bufferSize,
-        CompressionEncoding encoding = CompressionEncoding.deflate,
+        DataHeader header = DataHeader.zlib,
         int compressionLevel = CompressionLevel.default_,
         int windowBits = 15,
         int memoryLevel = 8,
@@ -116,14 +195,9 @@ public:
         //     -9..-15 - raw deflate, without zlib header or trailer and no crc
         //     25..31 = 16 + (9..15) - low 4 bits of the value is the window size log,
         //                             while including a basic gzip header and trailing checksum
-        // * memLevel:
-        //     default = 8
-        //     1..9 - minimum memory + slow .. maximum memory + best speed
-        // The memory requirements for deflate are (in bytes):
-        //     (1 << (windowBits+2)) + (1 << (memLevel+9)) + 'a few'KB
         // The memory requirements for inflate are (in bytes):
         //     1 << windowBits + ~7KB
-        immutable windowBitsValue = getWindowBitsValue(windowBits, encoding);
+        immutable windowBitsValue = getWindowBitsValue(windowBits, header);
         immutable status = c_zlib.deflateInit2(&_zlibStream, compressionLevel,
             CompressionMethod.deflate,
             windowBitsValue, memoryLevel, strategy);
@@ -137,11 +211,34 @@ public:
         // GC.free(_buffer.ptr);
     }
 
+    /++
+     + Checks if the compressed data needs to be retrieved by calling
+     + `compressPending` or `flush` before providing more input.
+     +
+     + `true` effectively means that there wasn't enough space in the buffer to
+     + fit all the compressed data at once and more steps are needed to transfer
+     + it.
+     +
+     + Returns: `true` if there is compressed data which must be retrieved
+     +          before providing more input, `false` otherwise.
+     +/
     @property bool outputPending() const
     {
         return _outputPending;
     }
 
+    /++
+     + Checks how many complete bytes of the compressed data needs to be
+     + retrieved by calling `compressPending` or `flush` before providing more
+     + input.
+     +
+     + Note: There may be more compressed bytes kept internally by the zlib
+     +       library, so this method does not give good estimate of the data
+     +       size that is to be produced.
+     +
+     + Returns: The number of compressed bytes that can be obtained without
+     +          providing additional input.
+     +/
     @property uint bytesPending() const
     {
         uint bytes;
@@ -152,16 +249,43 @@ public:
         return bytes;
     }
 
-    @property bool needsInput() const
+    /++
+     + Checks if more input data can be safely provided for compression.
+     +
+     + `false` means that there is still compressed output pending (see
+     +  `outputPending`) or the added input is not fully processed.
+     +
+     + Note: `compress` can be called safely only if `canAddInput == true`.
+     +
+     + Returns: `true` if the `compress` with more input is safe to call,
+     +          `false` otherwise.
+     +/
+    @property bool canAddInput() const
     {
-        return _zlibStream.avail_in == 0 && !outputPending;
+         return (_zlibStream.avail_in == 0 && !outputPending);
     }
 
+    /++
+     + Provides more data to be compressed.
+     +
+     + If there is no enough space in the
+     + buffer for the compressed data, then `outputPending` will become `true`
+     + and subsequent calls to `compressPending` will be required before
+     + providing more input.
+     +
+     + Note: The compressed data is transferred to the internal buffer, so
+     +       no memory allocations are performed directly by this structure.
+     +
+     + Params:
+     + data = An input data to be compressed.
+     +
+     + Returns: Slice of the internal buffer with the compressed data.
+     +/
     const(void)[] compress(const(void)[] data)
     in
     {
         // Ensure no leftovers from previous calls.
-        assert (needsInput);
+        assert (canAddInput);
     }
     body
     {
@@ -170,11 +294,33 @@ public:
         return compress(FlushMode.noFlush);
     }
 
+    /++
+     + Retrieves the remaining compressed data that didn't fit into the internal
+     + buffer during call to `compress` and continues to compress the input if
+     + it is not fully processed.
+     +
+     + Note: Check `canAddInput` to see if additional calls are required to
+     +       fully retrieve the data before providing more input.
+     +
+     + Returns: Slice of the internal buffer with the compressed data.
+     +/
     const(void)[] compressPending()
     {
         return compress(FlushMode.noFlush);
     }
 
+    /++
+     + Flushes the remaining compressed data.
+     +
+     + Note: Calls should be repeated with the same `mode` argument until
+     +       `outputPending == false`, otherwise the stream will corrupt and
+     +       an exception will be thrown.
+     +
+     + Params:
+     + mode = Mode to be applied for flushing. See `FlushMode` for details.
+     +
+     + Returns: Slice of the internal buffer with the compressed data.
+     +/
     const(void)[] flush(FlushMode mode = FlushMode.finish)
     {
         return compress(mode);
