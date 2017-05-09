@@ -106,6 +106,14 @@ enum DataHeader
 /++
  + A structure used to compress data incrementally.
  + For one-shot compression, use `dcompress.zlib.compress` function.
+ +
+ + All the compressed data produced by calls to `compress`, `compressPending`
+ + and `flush` should be concatenated together.
+ +
+ + `Compressor` keeps an internal buffer of fixed size for the compressed data
+ + produced the zlib library. The compressing methods return a slice of this
+ + internal buffer which means that the buffer is being modified between calls,
+ + but also no memory allocations are performed directly by any of the methods.
  +/
 struct Compressor
 {
@@ -151,7 +159,7 @@ public:
      + Params:
      + bufferSize = The internal buffer size in bytes. Indicates the upper limit
      +              of compressed data that may be returned by one call to
-     +              `compress` and `flush`.
+     +              `compress`, `compressPending` and `flush`.
      + header = Header to use for the compressed data. See `DataHeader` for details.
      + compressionLevel = A number between `-1` and `9`: `0` indicates no
      +                    compression at all, `1` gives the best speed but poor
@@ -212,15 +220,14 @@ public:
     }
 
     /++
-     + Checks if the compressed data needs to be retrieved by calling
-     + `compressPending` or `flush` before providing more input.
+     + Checks if there is compressed data available to retrieve without
+     + providing more input.
      +
      + `true` effectively means that there wasn't enough space in the buffer to
      + fit all the compressed data at once and more steps are needed to transfer
-     + it.
+     + it. This can be done either by calling `compressPending` or `flush`.
      +
-     + Returns: `true` if there is compressed data which must be retrieved
-     +          before providing more input, `false` otherwise.
+     + Returns: `true` if there is compressed data available, `false` otherwise.
      +/
     @property bool outputPending() const
     {
@@ -228,13 +235,14 @@ public:
     }
 
     /++
-     + Checks how many complete bytes of the compressed data needs to be
-     + retrieved by calling `compressPending` or `flush` before providing more
-     + input.
+     + Checks how many complete bytes of the compressed data is available to
+     + retrieve without providing more input.
+     +
+     + It can be done either by calling `compressPending` or `flush`.
      +
      + Note: There may be more compressed bytes kept internally by the zlib
-     +       library, so this method does not give good estimate of the data
-     +       size that is to be produced.
+     +       library, so this method does not give good estimate of the total
+     +       data size that is to be produced.
      +
      + Returns: The number of compressed bytes that can be obtained without
      +          providing additional input.
@@ -250,31 +258,27 @@ public:
     }
 
     /++
-     + Checks if more input data can be safely provided for compression.
+     + Checks if the last input has been completely processed.
      +
-     + `false` means that there is still compressed output pending (see
-     +  `outputPending`) or the added input is not fully processed.
+     + `true` means more input data can be safely provided for compression.
      +
-     + Note: `compress` can be called safely only if `canAddInput == true`.
+     + Note: There still may be compressed data available to retrieve by calling
+     +       `compressPending` or `flush`, without the need to provide more input.
      +
-     + Returns: `true` if the `compress` with more input is safe to call,
-     +          `false` otherwise.
+     + Returns: `true` if the input has been processed, `false` otherwise.
      +/
-    @property bool canAddInput() const
+    @property bool inputProcessed() const
     {
-         return (_zlibStream.avail_in == 0 && !outputPending);
+         return _zlibStream.avail_in == 0;
     }
 
     /++
      + Provides more data to be compressed.
      +
-     + If there is no enough space in the
-     + buffer for the compressed data, then `outputPending` will become `true`
-     + and subsequent calls to `compressPending` will be required before
-     + providing more input.
-     +
-     + Note: The compressed data is transferred to the internal buffer, so
-     +       no memory allocations are performed directly by this structure.
+     + If there is no enough space in the buffer for the compressed data then
+     + `outputPending` will become `true`. The `data` must be completely
+     +  processed, i.e. `inputProcessed == true`, before the next invocation
+     +  of this method.
      +
      + Params:
      + data = An input data to be compressed.
@@ -285,7 +289,7 @@ public:
     in
     {
         // Ensure no leftovers from previous calls.
-        assert (canAddInput);
+        assert (inputProcessed);
     }
     body
     {
@@ -296,10 +300,9 @@ public:
 
     /++
      + Retrieves the remaining compressed data that didn't fit into the internal
-     + buffer during call to `compress` and continues to compress the input if
-     + it is not fully processed.
+     + buffer during call to `compress` and continues to compress the input.
      +
-     + Note: Check `canAddInput` to see if additional calls are required to
+     + Note: Check `inputProcessed` to see if additional calls are required to
      +       fully retrieve the data before providing more input.
      +
      + Returns: Slice of the internal buffer with the compressed data.
@@ -333,11 +336,17 @@ public:
 
         // * ZlibStatus.ok -- progress has been made
         // * ZlibStatus.bufferError -- no progress possible
-        // * ZlibStatus.streamEnd -- all input has been consumed and all output has been produced (only when mode == FlushMode.finish)
+        // * ZlibStatus.streamEnd -- all input has been consumed and all output
+        //   has been produced (only when mode == FlushMode.finish)
         immutable status = c_zlib.deflate(&_zlibStream, mode);
 
         if (status == ZlibStatus.ok)
-            _outputPending = (_zlibStream.avail_out == 0 && bytesPending > 0);
+        {
+            if (mode == FlushMode.finish)
+                _outputPending = true;
+            else
+                _outputPending = (_zlibStream.avail_out == 0 && bytesPending > 0);
+        }
         else
         {
             // TODO Think whether output buffer can be corrupted.
