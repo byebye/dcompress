@@ -9,20 +9,6 @@ module dcompress.zlib;
 import c_zlib = etc.c.zlib;
 
 /++
- + Modifies behavior of `Compressor.flush`.
- +/
-enum FlushMode
-{
-    noFlush = c_zlib.Z_NO_FLUSH, ///
-    partial = c_zlib.Z_PARTIAL_FLUSH, ///
-    sync    = c_zlib.Z_SYNC_FLUSH, ///
-    full    = c_zlib.Z_FULL_FLUSH, ///
-    finish  = c_zlib.Z_FINISH, ///
-    block   = c_zlib.Z_BLOCK, ///
-    trees   = c_zlib.Z_TREES, ///
-}
-
-/++
  + Status codes returned by zlib library.
  +/
 private enum ZlibStatus
@@ -150,6 +136,38 @@ private:
     }
 
 public:
+
+    /++
+     + Modifies behavior of `Compressor.flush`.
+     +
+     + Note: Frequent flushing may seriously degrade the compression.
+     +/
+    enum FlushMode
+    {
+        /// All pending output is flushed and the output is aligned on a byte
+        /// boundary so that all the available input so far will be processed
+        /// (assuming enough space in the output buffer).
+        sync    = c_zlib.Z_SYNC_FLUSH,
+        /// All output is flushed as with `FlushMode.sync` and the compression
+        /// state is reset so that decompression can restart from this point,
+        /// e.g. if previous compressed data has been damaged or if random
+        /// access is desired.
+        full    = c_zlib.Z_FULL_FLUSH,
+        /// Default mode. Used to correctly finish the compression process.
+        finish  = c_zlib.Z_FINISH,
+        /// A deflate block is completed and emitted, as for `FlushMode.sync`,
+        /// except the output is not aligned on a byte boundary and up to seven
+        /// bits of the current block may be held to be written as the next byte
+        /// until the next deflate block is completed. In this case, the
+        /// compressor may need to wait for more input for the next block to be
+        /// emitted. This is for advanced applications that need to control the
+        /// emission  of deflate blocks.
+        block   = c_zlib.Z_BLOCK,
+        /// No flushing mode, allows decide how much data to accumulate before
+        /// producing output, in order to maximize compression. `flush` called
+        /// with this mode is equivalent to `compressPending`.
+        noFlush = c_zlib.Z_NO_FLUSH,
+    }
 
     @disable this();
 
