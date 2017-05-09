@@ -24,6 +24,44 @@ private enum ZlibStatus
     libVersionError = c_zlib.Z_VERSION_ERROR,
 }
 
+private string getErrorMessage(int status)
+in
+{
+    // These are not errors.
+    assert(status != ZlibStatus.ok);
+    assert(status != ZlibStatus.streamEnd);
+    assert(status != ZlibStatus.needDict);
+}
+body
+{
+     switch(status)
+     {
+        case ZlibStatus.bufferError:
+            return "Buffer error";
+        case ZlibStatus.streamError:
+            return "Stream error";
+        case ZlibStatus.dataError:
+            return "Data error";
+        case ZlibStatus.libVersionError:
+            return "Incompatible zlib library version";
+        case ZlibStatus.errno:
+            return "Error outside the library";
+        default:
+            return "Unknown error";
+     }
+}
+
+/++
+ + Exceptions thrown by this module on error.
+ +/
+class ZlibException : Exception
+{
+    this(int status)
+    {
+        super(getErrorMessage(status));
+    }
+}
+
 /++
  + Compression methods supported by zlib library.
  +/
@@ -104,7 +142,7 @@ enum DataHeader
 private int getWindowBitsValue(int windowBits, DataHeader header)
 in
 {
-    assert (9 <= windowBits && windowBits <= 15);
+    assert(9 <= windowBits && windowBits <= 15);
 }
 body
 {
@@ -136,12 +174,6 @@ private:
     c_zlib.z_stream _zlibStream;
     ubyte[] _buffer;
     bool _outputPending;
-
-    void throwException(int status)
-    {
-        // TODO status description
-        throw new Exception("Error");
-    }
 
 public:
 
@@ -204,6 +236,9 @@ public:
      +               `(1 << (windowBits+2)) + (1 << (memLevel+9))` plus a few
      +               kilobytes for small objects.
      + strategy = Tunes the compression algorithm. See `CompressionStrategy` for details.
+     +
+     + Throws: `ZlibException` if unable to initialize the zlib library, e.g.
+     +         there is no enough memory or the library version is incompatible.
      +/
     this(ubyte[] buffer,
         DataHeader header = DataHeader.zlib,
@@ -213,10 +248,10 @@ public:
         CompressionStrategy strategy = CompressionStrategy.default_)
     in
     {
-        assert (-1 <= compressionLevel && compressionLevel <= 9);
-        assert (9 <= windowBits && windowBits <= 15);
-        assert (1 <= memoryLevel && memoryLevel <= 9);
-        assert (header != DataHeader.automatic);
+        assert(-1 <= compressionLevel && compressionLevel <= 9);
+        assert(9 <= windowBits && windowBits <= 15);
+        assert(1 <= memoryLevel && memoryLevel <= 9);
+        assert(header != DataHeader.automatic);
     }
     body
     {
@@ -227,7 +262,7 @@ public:
             windowBitsValue, memoryLevel, strategy);
 
         if (status != ZlibStatus.ok)
-            throwException(status);
+            throw new ZlibException(status);
     }
 
     ~this()
@@ -269,7 +304,7 @@ public:
         // Casting away const here is safe as deflatePending does not modify the stream.
         immutable status = c_zlib.deflatePending(cast(c_zlib.z_stream*)&_zlibStream, &bytes, null);
         // This structure ensures a consistent state of the stream.
-        assert (status == ZlibStatus.ok);
+        assert(status == ZlibStatus.ok);
         return bytes;
     }
 
@@ -300,12 +335,16 @@ public:
      + data = An input data to be compressed.
      +
      + Returns: Slice of the internal buffer with the compressed data.
+     +
+     + Throws: `ZlibException` if the zlib library returns error. It may happen
+     +          especially when `compress` is being called after `flush`
+     +          while `outputPending == true`.
      +/
     const(void)[] compress(const(void)[] data)
     in
     {
         // Ensure no leftovers from previous calls.
-        assert (inputProcessed);
+        assert(inputProcessed);
     }
     body
     {
@@ -322,6 +361,10 @@ public:
      +       fully retrieve the data before providing more input.
      +
      + Returns: Slice of the internal buffer with the compressed data.
+     +
+     + Throws: `ZlibException` if the zlib library returns error. It may happen
+     +          especially when `compressPending` is being called after `flush`
+     +          while `outputPending == true`.
      +/
     const(void)[] compressPending()
     {
@@ -333,12 +376,16 @@ public:
      +
      + Note: Repeat invoking this method with the same `mode` argument until
      +       `outputPending == false`, otherwise the compression may be invalid
-     +        and exception may be thrown.
+     +       and exception may be thrown.
      +
      + Params:
      + mode = Mode to be applied for flushing. See `FlushMode` for details.
      +
      + Returns: Slice of the internal buffer with the compressed data.
+     +
+     + Throws: `ZlibException` if the zlib library returns error. It may happen
+     +         especially when `flush` is being called again with different
+     +         `mode` argument while `outputPending == true`.
      +/
     const(void)[] flush(FlushMode mode = FlushMode.finish)
     {
@@ -366,17 +413,17 @@ public:
         else
         {
             // TODO Think whether output buffer can be corrupted.
-            assert (status != ZlibStatus.bufferError);
+            assert(status != ZlibStatus.bufferError);
 
             if (status == ZlibStatus.streamEnd)
             {
                 _outputPending = false;
                 status = c_zlib.deflateReset(&_zlibStream);
-                assert (status == ZlibStatus.ok);
+                assert(status == ZlibStatus.ok);
             }
             else
             {
-                throwException(status);
+                throw new ZlibException(status);
             }
         }
 
