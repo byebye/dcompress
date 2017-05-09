@@ -61,7 +61,16 @@ void main() {
         writeln(o);
     }
     {
-        writeln(d_zlib.compress(data));
+        struct R
+        {
+            immutable(string)[] s;
+            @property string front() { return s[0]; }
+            @property void popFront() { s = s[1 .. $]; }
+            @property bool empty() { return s.length == 0; }
+        }
+        writeln(d_zlib.compress(data[]));
+        writeln(d_zlib.compress!(typeof(data[]))(data[]));
+        writeln((d_zlib.compress(R(data))));
         writeln(d_zlib.compress(dataJoined));
     }
     {

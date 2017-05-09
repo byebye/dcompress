@@ -7,6 +7,10 @@
 module dcompress.zlib;
 
 //debug = zlib;
+debug(zlib)
+{
+    import std.stdio;
+}
 
 import c_zlib = etc.c.zlib;
 
@@ -656,7 +660,8 @@ public:
  +/
 void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 {
-    ubyte[] buffer = void;
+    debug(zlib) writeln("compress:void[]");
+    ubyte[] buffer;
     auto comp = Compressor(buffer, policy);
     // Get upper bound of the compressed data size.
     immutable bufSizeBound = c_zlib.deflateBound(&comp._zlibStream, data.length);
@@ -665,7 +670,7 @@ void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy
     return cast(void[])comp.flush(Compressor.FlushMode.finish);
 }
 
-import dcompress.primitives : isCompressInput;
+import dcompress.primitives : isCompressInput, isCompressOutput;
 
 /++
  + ditto
@@ -673,10 +678,12 @@ import dcompress.primitives : isCompressInput;
 void[] compress(R)(R data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 if (isCompressInput!R)
 {
+    debug(zlib) writeln("compress:Range");
     immutable chunkSize = 1024;
 
     import std.range.primitives : ElementType, hasLength;
-    static if (is(ElementType!R == ubyte))
+    import std.traits : Unqual;
+    static if (is(Unqual!(ElementType!R) == ubyte))
     {
         static if (hasLength!R)
         {
@@ -685,7 +692,7 @@ if (isCompressInput!R)
         }
         else
         {
-            ubyte[] output;
+            void[] output;
             ubyte[] buffer = new ubyte[chunkSize];
             auto comp = Compressor(buffer, policy);
 
@@ -708,9 +715,9 @@ if (isCompressInput!R)
             return output;
         }
     }
-    else // is(ElementType!R : void[])
+    else // isArray!(ElementType!R)
     {
-        ubyte[] output;
+        void[] output;
         ubyte[] buffer = new ubyte[chunkSize];
         auto comp = Compressor(buffer, policy);
 
@@ -726,7 +733,6 @@ if (isCompressInput!R)
         } while (comp.outputPending);
         return output;
     }
-
 }
 
 /++
