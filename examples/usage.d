@@ -37,6 +37,7 @@ void main() {
 
 
     immutable data = ["aaa", "bbb", "ccc", "dafasdfadfaf", "dfadfa", "adfaf" ];
+    immutable dataJoined = data.dup.joiner.array;
     {
         auto comp = d_zlib.Compressor(new ubyte[2]);
         ubyte[] output;
@@ -55,12 +56,16 @@ void main() {
     }
     {
         auto c2 = d_zlib.Compressor(new ubyte[1024]);
-        auto o = cast(ubyte[]) c2.compress(data.dup.joiner.array).dup;
+        auto o = cast(ubyte[]) c2.compress(dataJoined).dup;
         o ~= cast(ubyte[]) c2.flush();
         writeln(o);
     }
     {
-        writeln(std_zlib.compress(data.dup.joiner.array));
+        writeln(d_zlib.compress(data));
+        writeln(d_zlib.compress(dataJoined));
+    }
+    {
+        writeln(std_zlib.compress(data));
     }
     {
         auto comp = new std_zlib.Compress;

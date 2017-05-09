@@ -6,6 +6,8 @@
  +/
 module dcompress.zlib;
 
+//debug = zlib;
+
 import c_zlib = etc.c.zlib;
 
 /++
@@ -45,7 +47,7 @@ body
         case ZlibStatus.libVersionError:
             return "Incompatible zlib library version";
         case ZlibStatus.errno:
-            return "Error outside the library";
+            return "Error outside the zlib library";
         default:
             return "Unknown error";
      }
@@ -392,8 +394,9 @@ public:
      + Creates a compressor with the given settings.
      +
      + Params:
-     + buffer = The internal buffer which serves as an output for the compressed
-     +          data.
+     + buffer = An array to be set as the internal buffer which serves as an
+     +          output for the compressed data. The buffer is only used by
+     +          compressing methods and it may be replaced at any time.
      + policy = A policy defining different aspects of the compression process.
      +
      + Throws: `ZlibException` if unable to initialize the zlib library, e.g.
@@ -422,6 +425,29 @@ public:
     ~this()
     {
         c_zlib.deflateEnd(&_zlibStream);
+    }
+
+    /++
+     + Gets the current internal buffer. Note that the buffer does not remember
+     + where the compressed data ends.
+     +
+     + Returns: The current internal buffer.
+     +/
+    @property const(ubyte)[] buffer() const
+    {
+         return _buffer;
+    }
+
+    /++
+     + Replaces the current internal buffer with the given one.
+     +
+     + Params:
+     + buf = An array to be set as the internal buffer which serves as an output
+     +       for the compressed data.
+     +/
+    @property void buffer(ubyte[] buf)
+    {
+         _buffer = buf;
     }
 
     /++
@@ -568,9 +594,19 @@ public:
     }
 
     private const(void)[] compress(FlushMode mode)
+    in
+    {
+        assert(_buffer.length > 0);
+    }
+    body
     {
         _zlibStream.next_out = _buffer.ptr;
         _zlibStream.avail_out = cast(uint) _buffer.length;
+
+        debug(zlib) {
+            import std.stdio;
+            writefln("In bytes: %d, Out bytes: %d", _zlibStream.avail_in, _zlibStream.avail_out);
+        }
 
         // * ZlibStatus.ok -- progress has been made
         // * ZlibStatus.bufferError -- no progress possible
@@ -620,10 +656,16 @@ public:
  +/
 void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 {
-    ubyte[] buffer;
+    ubyte[] buffer = void;
     auto comp = Compressor(buffer, policy);
-    return new void[0];
+    // Get upper bound of the compressed data size.
+    immutable bufSizeBound = c_zlib.deflateBound(&comp._zlibStream, data.length);
+    comp.buffer = new ubyte[bufSizeBound];
+    comp.input = data;
+    return cast(void[])comp.flush(Compressor.FlushMode.finish);
 }
+
+import dcompress.primitives : isCompressInput;
 
 /++
  + ditto
@@ -631,7 +673,60 @@ void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy
 void[] compress(R)(R data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 if (isCompressInput!R)
 {
-    return new void[0];
+    immutable chunkSize = 1024;
+
+    import std.range.primitives : ElementType, hasLength;
+    static if (is(ElementType!R == ubyte))
+    {
+        static if (hasLength!R)
+        {
+            ubyte[] input = new ubyte[data.length];
+            return compress(input, policy);
+        }
+        else
+        {
+            ubyte[] output;
+            ubyte[] buffer = new ubyte[chunkSize];
+            auto comp = Compressor(buffer, policy);
+
+            ubyte[] input = new ubyte[chunkSize];
+            while (!data.empty)
+            {
+                foreach (i; 0 .. chunkSize)
+                {
+                    input[i] = data.front;
+                    data.popFront();
+                }
+                output ~= comp.compress(input);
+                while (!comp.inputProcessed)
+                    output ~= comp.compressPending();
+            }
+            do
+            {
+                output ~= comp.flush();
+            } while (comp.outputPending);
+            return output;
+        }
+    }
+    else // is(ElementType!R : void[])
+    {
+        ubyte[] output;
+        ubyte[] buffer = new ubyte[chunkSize];
+        auto comp = Compressor(buffer, policy);
+
+        foreach (chunk; data)
+        {
+            output ~= comp.compress(chunk);
+            while (!comp.inputProcessed)
+                output ~= comp.compressPending();
+        }
+        do
+        {
+            output ~= comp.flush();
+        } while (comp.outputPending);
+        return output;
+    }
+
 }
 
 /++
