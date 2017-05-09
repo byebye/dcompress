@@ -4,9 +4,18 @@ import std.range.primitives : isInputRange, isOutputRange, ElementType;
 
 public:
 
-enum isCompressOutput(R) = (isOutputRange!(R, ubyte) || isOutputRange!(R, void[]));
+enum isCompressOutput(R) = (isOutputRange!(R, ubyte) || isOutputRange!(R, const(void)[]));
 
-enum isCompressInput(R) = (isInputRange!R && (is(ElementType!R == ubyte) || is(ElementType!R : void[])));
+template isCompressInput(R)
+{
+    import std.traits : Unqual, isArray;
+    alias UR = Unqual!R;
+
+    enum isCompressInput =
+        isArray!R ||
+        isInputRange!UR &&
+            (is(Unqual!(ElementType!R) == ubyte) || isArray!(ElementType!UR));
+}
 
 enum isCompressor(C) = __traits(compiles,
     (C c)
