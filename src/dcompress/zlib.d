@@ -478,12 +478,34 @@ public:
     }
 
     /++
-     + Provides more data to be compressed.
+     + Only sets the input to be compressed in the next call `compressPending`
+     + or `flush`, without advancing the compression process.
+     +
+     + Note: The previous input that has not been fully processed is overriden.
+     +
+     + Params:
+     + data = An input data to be compressed.
+     +/
+    @property void input(const(void)[] data)
+    {
+        _zlibStream.next_in = cast(const(ubyte)*) data.ptr;
+        _zlibStream.avail_in = cast(uint) data.length; // TODO check for overflow
+    }
+
+    /++
+     + Provides more data to be compressed and proceeds with the compression.
+     +
+     + This method is an equivalent of the following code:
+     +
+     + ---
+     + input = data;
+     + return compressPending();
+     + ---
      +
      + If there is no enough space in the buffer for the compressed data then
-     + `outputPending` will become `true`. The `data` must be completely
+     + `outputPending` will become `true`. The `data` should be completely
      +  processed, i.e. `inputProcessed == true`, before the next invocation
-     +  of this method.
+     +  of this method, otherwise the compression process may be broken.
      +
      + Params:
      + data = An input data to be compressed.
@@ -502,9 +524,8 @@ public:
     }
     body
     {
-        _zlibStream.next_in = cast(const(ubyte)*) data.ptr;
-        _zlibStream.avail_in = cast(uint) data.length; // TODO check for overflow
-        return compress(FlushMode.noFlush);
+        input = data;
+        return compressPending();
     }
 
     /++
@@ -591,7 +612,7 @@ public:
  +
  + Params:
  + data = Bytes to be compressed.
- + poicy = A policy defining different aspects of the compression process.
+ + policy = A policy defining different aspects of the compression process.
  +
  + Returns: Compressed data.
  +
@@ -599,6 +620,8 @@ public:
  +/
 void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 {
+    ubyte[] buffer;
+    auto comp = Compressor(buffer, policy);
     return new void[0];
 }
 
@@ -618,7 +641,7 @@ if (isCompressInput!R)
  + Params:
  + data = Bytes to be compressed.
  + output = Output range taking the compressed bytes.
- + poicy = A policy defining different aspects of the compression process.
+ + policy = A policy defining different aspects of the compression process.
  +
  + Throws: `ZlibException` if any error occurs.
  +/
