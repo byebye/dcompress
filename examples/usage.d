@@ -38,7 +38,7 @@ void main() {
 
     immutable data = ["aaa", "bbb", "ccc", "dafasdfadfaf", "dfadfa", "adfaf" ];
     {
-        auto comp = d_zlib.Compressor(2);
+        auto comp = d_zlib.Compressor(new ubyte[2]);
         ubyte[] output;
         foreach (chunk; data)
         {
@@ -54,7 +54,7 @@ void main() {
         writeln(output);
     }
     {
-        auto c2 = d_zlib.Compressor(1024);
+        auto c2 = d_zlib.Compressor(new ubyte[1024]);
         auto o = cast(ubyte[]) c2.compress(data.dup.joiner.array).dup;
         o ~= cast(ubyte[]) c2.flush();
         writeln(o);

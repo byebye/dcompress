@@ -119,20 +119,10 @@ private:
         }
     }
 
-    void throwException(ZlibStatus status)
+    void throwException(int status)
     {
         // TODO status description
         throw new Exception("Error");
-    }
-
-    void checkForError(int status)
-    {
-        if (status != ZlibStatus.ok)
-        {
-            // c_zlib.deflateEnd(&_zlibStream); // TODO think about it.
-            import std.conv : to;
-            throwException(to!ZlibStatus(status));
-        }
     }
 
 public:
@@ -175,9 +165,8 @@ public:
      + Creates a compressor with the given settings.
      +
      + Params:
-     + bufferSize = The internal buffer size in bytes. Indicates the upper limit
-     +              of compressed data that may be returned by one call to
-     +              `compress`, `compressPending` and `flush`.
+     + buffer = The internal buffer which serves as an output for the compressed
+     +          data.
      + header = Header to use for the compressed data. See `DataHeader` for details.
      + compressionLevel = A number between `-1` and `9`: `0` indicates no
      +                    compression at all, `1` gives the best speed but poor
@@ -198,7 +187,7 @@ public:
      +               kilobytes for small objects.
      + strategy = Tunes the compression algorithm. See `CompressionStrategy` for details.
      +/
-    this(uint bufferSize,
+    this(ubyte[] buffer,
         DataHeader header = DataHeader.zlib,
         int compressionLevel = CompressionLevel.default_,
         int windowBits = 15,
@@ -212,7 +201,7 @@ public:
     }
     body
     {
-        _buffer = new ubyte[bufferSize];
+        _buffer = buffer;
         // int deflateInit2(z_streamp strm, int level, int method, int windowBits, int memLevel, int strategy);
         // * windowsBits:
         //     default = 15
@@ -227,14 +216,14 @@ public:
         immutable status = c_zlib.deflateInit2(&_zlibStream, compressionLevel,
             CompressionMethod.deflate,
             windowBitsValue, memoryLevel, strategy);
-        checkForError(status);
+
+        if (status != ZlibStatus.ok)
+            throwException(status);
     }
 
     ~this()
     {
         c_zlib.deflateEnd(&_zlibStream);
-        // import core.memory : GC;
-        // GC.free(_buffer.ptr);
     }
 
     /++
@@ -333,9 +322,9 @@ public:
     /++
      + Flushes the remaining compressed data.
      +
-     + Note: Calls should be repeated with the same `mode` argument until
-     +       `outputPending == false`, otherwise the stream will corrupt and
-     +       an exception will be thrown.
+     + Note: Repeat invoking this method with the same `mode` argument until
+     +       `outputPending == false`, otherwise the compression may be invalid
+     +        and exception may be thrown.
      +
      + Params:
      + mode = Mode to be applied for flushing. See `FlushMode` for details.
@@ -356,7 +345,7 @@ public:
         // * ZlibStatus.bufferError -- no progress possible
         // * ZlibStatus.streamEnd -- all input has been consumed and all output
         //   has been produced (only when mode == FlushMode.finish)
-        immutable status = c_zlib.deflate(&_zlibStream, mode);
+        auto status = c_zlib.deflate(&_zlibStream, mode);
 
         if (status == ZlibStatus.ok)
         {
@@ -373,12 +362,12 @@ public:
             if (status == ZlibStatus.streamEnd)
             {
                 _outputPending = false;
-                // TODO deflateReset or deflateEnd
+                status = c_zlib.deflateReset(&_zlibStream);
+                assert (status == ZlibStatus.ok);
             }
             else
             {
-                import std.conv : to;
-                throwException(to!ZlibStatus(status));
+                throwException(status);
             }
         }
 
