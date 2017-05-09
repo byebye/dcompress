@@ -87,6 +87,34 @@ enum DataHeader
     /// gzip wrapper around a deflate stream. See the specification
     /// $(LINK2 https://tools.ietf.org/html/rfc1952, RFC 1952).
     gzip,
+    /// Automatic header detection for decompressing functions.
+    automatic
+}
+
+/++
+ + Returns window size value depending on the header. Used to initialize
+ + a zlib stream:
+ + * default = 15
+ + * 9..15 - base 2 log of the window size
+ + * -9..-15 - raw deflate, without zlib header or trailer and no crc
+ + * 25..31 = 16 + (9..15) - low 4 bits of the value is the window size log,
+ +                           while including a basic gzip header and checksum
+ + * 41..47 = 32 + (9..15) - automatic header detection in decompressed data
+ +/
+private int getWindowBitsValue(int windowBits, DataHeader header)
+in
+{
+    assert (9 <= windowBits && windowBits <= 15);
+}
+body
+{
+    final switch (header)
+    {
+        case DataHeader.zlib: return windowBits;
+        case DataHeader.rawDeflate: return -windowBits;
+        case DataHeader.gzip: return 16 + windowBits;
+        case DataHeader.automatic: return 32 + windowBits;
+    }
 }
 
 /++
@@ -108,16 +136,6 @@ private:
     c_zlib.z_stream _zlibStream;
     ubyte[] _buffer;
     bool _outputPending;
-
-    int getWindowBitsValue(int windowBits, DataHeader header)
-    {
-        final switch (header)
-        {
-            case DataHeader.zlib: return windowBits;
-            case DataHeader.rawDeflate: return -windowBits;
-            case DataHeader.gzip: return 16 + windowBits;
-        }
-    }
 
     void throwException(int status)
     {
@@ -198,20 +216,11 @@ public:
         assert (-1 <= compressionLevel && compressionLevel <= 9);
         assert (9 <= windowBits && windowBits <= 15);
         assert (1 <= memoryLevel && memoryLevel <= 9);
+        assert (header != DataHeader.automatic);
     }
     body
     {
         _buffer = buffer;
-        // int deflateInit2(z_streamp strm, int level, int method, int windowBits, int memLevel, int strategy);
-        // * windowsBits:
-        //     default = 15
-        //     8 - not supported
-        //     9..15 - base 2 log of the window size
-        //     -9..-15 - raw deflate, without zlib header or trailer and no crc
-        //     25..31 = 16 + (9..15) - low 4 bits of the value is the window size log,
-        //                             while including a basic gzip header and trailing checksum
-        // The memory requirements for inflate are (in bytes):
-        //     1 << windowBits + ~7KB
         immutable windowBitsValue = getWindowBitsValue(windowBits, header);
         immutable status = c_zlib.deflateInit2(&_zlibStream, compressionLevel,
             CompressionMethod.deflate,
