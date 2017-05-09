@@ -660,14 +660,14 @@ public:
  +/
 void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 {
-    debug(zlib) writeln("compress:void[]");
+    debug(zlib) writeln("compress!void[]");
     ubyte[] buffer;
     auto comp = Compressor(buffer, policy);
     // Get upper bound of the compressed data size.
     immutable bufSizeBound = c_zlib.deflateBound(&comp._zlibStream, data.length);
     comp.buffer = new ubyte[bufSizeBound];
     comp.input = data;
-    return cast(void[])comp.flush(Compressor.FlushMode.finish);
+    return cast(void[])comp.flush();
 }
 
 import dcompress.primitives : isCompressInput, isCompressOutput;
@@ -678,7 +678,7 @@ import dcompress.primitives : isCompressInput, isCompressOutput;
 void[] compress(R)(R data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 if (isCompressInput!R)
 {
-    debug(zlib) writeln("compress:Range");
+    debug(zlib) writeln("compress!Range");
     immutable chunkSize = 1024;
 
     import std.range.primitives : ElementType, hasLength;
@@ -749,7 +749,43 @@ if (isCompressInput!R)
 void compress(R)(const(void)[] data, R output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 if (isCompressOutput!R)
 {
+    debug(zlib) writeln("compress!(void[], OutputRange)");
 
+    import std.traits : Unqual, isArray;
+    static if (isArray!R)
+    {
+        void[] buffer = output;
+        auto comp = Compressor(buffer, policy);
+        // Get upper bound of the compressed data size.
+        immutable bufSizeBound = c_zlib.deflateBound(&comp._zlibStream, data.length);
+        if (bufSizeBound > buffer.length)
+        {
+            buffer.length = bufSizeBound;
+            comp.buffer = buffer;
+        }
+        comp.input = data;
+        comp.flush();
+    }
+    else
+    {
+        immutable chunkSize = 1024;
+
+        ubyte[] buffer = new ubyte[chunkSize];
+        auto comp = Compressor(buffer, policy);
+
+        import std.range : chunks;
+        import std.range.primitives : put;
+        foreach (chunk; data.chunks(chunkSize))
+        {
+            put(comp.compress(chunk), output);
+            while (!comp.inputProcessed)
+                put(comp.compressPending(), output);
+        }
+        do
+        {
+            put(comp.flush(), output);
+        } while (comp.outputPending);
+    }
 }
 
 /++
@@ -758,4 +794,5 @@ if (isCompressOutput!R)
 void compress(InR, OutR)(InR data, OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 if (isCompressInput!InR && isCompressOutput!OutR)
 {
+    debug(zlib) writeln("compress!(InputRange, OutputRange)");
 }
