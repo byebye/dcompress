@@ -585,3 +585,53 @@ public:
         return _buffer[0 .. writtenBytes];
     }
 }
+
+/++
+ + Compresses at once all the bytes using the given compression policy.
+ +
+ + Params:
+ + data = Bytes to be compressed.
+ + poicy = A policy defining different aspects of the compression process.
+ +
+ + Returns: Compressed data.
+ +
+ + Throws: `ZlibException` if any error occurs.
+ +/
+void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+{
+    return new void[0];
+}
+
+/++
+ + ditto
+ +/
+void[] compress(R)(R data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+if (isCompressInput!R)
+{
+    return new void[0];
+}
+
+/++
+ + Compresses all the bytes using the given compression policy and outputs
+ + the compressed data directly to `output`.
+ +
+ + Params:
+ + data = Bytes to be compressed.
+ + output = Output range taking the compressed bytes.
+ + poicy = A policy defining different aspects of the compression process.
+ +
+ + Throws: `ZlibException` if any error occurs.
+ +/
+void compress(R)(const(void)[] data, R output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+if (isCompressOutput!R)
+{
+
+}
+
+/++
+ + ditto
+ +/
+void compress(InR, OutR)(InR data, OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+if (isCompressInput!InR && isCompressOutput!OutR)
+{
+}
