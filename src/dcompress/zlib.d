@@ -156,8 +156,185 @@ body
 }
 
 /++
- + A structure used to compress data incrementally.
- + For one-shot compression, use `dcompress.zlib.compress` function.
+ + Settings allowing to adjust the compression process.
+ +/
+struct CompressionPolicy
+{
+private:
+    DataHeader _header = DataHeader.zlib;
+    int _compressionLevel = CompressionLevel.default_;
+    int _windowBits = 15;
+    int _memoryLevel = 8;
+    CompressionStrategy _strategy = CompressionStrategy.default_;
+
+public:
+
+    static CompressionPolicy defaultPolicy()
+    {
+         return CompressionPolicy.init;
+    }
+
+    /++
+     + Header to wrap the compressed data. See `DataHeader` for details.
+     +
+     + Returns: The current header value.
+     +/
+    @property DataHeader header() const
+    {
+         return _header;
+    }
+
+    /++
+     + Sets the header to the given value.
+     +
+     + Params:
+     + newHeader = New header value.
+     +/
+    @property void header(DataHeader newHeader)
+    {
+         _header = newHeader;
+    }
+
+    /++
+     + Controls the level of compression.
+     +
+     + `0` means no compression at all, `1` gives the best speed but poor
+     + compression, `9` gives the best compression, but is slow.
+     + `-1` is a default compromise between speed and compression
+     + (currently equivalent to level 6).
+     +
+     + Returns: A number between `-1` and `9` indicating the compression level.
+     +/
+    @property int compressionLevel() const
+    {
+         return _compressionLevel;
+    }
+
+    /++
+     + Sets the compression level to the given value.
+     +
+     + Params:
+     + newLevel = New compression level, must be a number from `-1` to `9`.
+     +/
+    @property void compressionLevel(int newLevel)
+    in
+    {
+        assert(-1 <= newLevel && newLevel <= 9);
+    }
+    body
+    {
+         _compressionLevel = newLevel;
+    }
+
+    /++
+     + Controls the size of the history buffer (i.e. window size) used when
+     + compressing data.
+     +
+     + Returns: A number between `9` and `15` being a base `2` logarithm of
+     +          the current window size.
+     +/
+    @property int windowBits() const
+    {
+        return _windowBits;
+    }
+
+    /++
+     + Sets the window size.
+     +
+     + Params:
+     + newWindowBits = New base `2` logarithm of the window size. Must be
+     +                 a number from `9` (`512`-byte window) to `15`
+     +                 (`32`KB window - default).
+     +/
+    @property void windowBits(int newWindowBits)
+    in
+    {
+        assert(9 <= newWindowBits && newWindowBits <= 15);
+    }
+    body
+    {
+         _windowBits = newWindowBits;
+    }
+
+    /++
+     + Stores in one value the window size and header, according to the zlib
+     + specification. Used to initialize the zlib library compression process.
+     +
+     + Returns: The window size with included header value.
+     +/
+    @property int windowBitsWithHeader() const
+    {
+        final switch (_header)
+        {
+            case DataHeader.zlib: return _windowBits;
+            case DataHeader.rawDeflate: return -_windowBits;
+            case DataHeader.gzip: return 16 + _windowBits;
+            case DataHeader.automatic: return 32 + _windowBits;
+        }
+    }
+
+    /++
+     + Specifies how much memory should be allocated for the internal
+     + compression state of the zlib library.
+     +
+     + It is a number from `1` - using minimum memory but slow and reducing
+     + compression ratio, to `9` - using maximum memory for the best speed
+     + and compression. The default value is `8`.
+     +
+     + The approximate memory requirements are (in bytes):
+     + $(UL
+     +     $(LI for compression: `(1 << (windowBits + 2)) + (1 << (memLevel + 9))`
+     +       plus a few kilobytes for small objects.)
+     +     $(LI for decompression: `(1 << windowBits)` plus about `7`KB.)
+     + )
+     + Returns: The current memory level.
+     +/
+    @property int memoryLevel() const
+    {
+         return _memoryLevel;
+    }
+
+    /++
+     + Sets the memory level to the given value.
+     +
+     + Params:
+     + newLevel = New memory level value.
+     +/
+    @property void memoryLevel(int newLevel)
+    in
+    {
+        assert(1 <= newLevel && newLevel <= 9);
+    }
+    body
+    {
+         _memoryLevel = newLevel;
+    }
+
+    /++
+     + Tunes the compression algorithm. See `CompressionStrategy` for details.
+     +
+     + Returns: The current compression strategy.
+     +/
+    @property CompressionStrategy strategy() const
+    {
+         return _strategy;
+    }
+
+    /++
+     + Sets the compression strategy to the given value.
+     +
+     + Params:
+     + newStrategy = New strategy value.
+     +/
+    @property void strategy(CompressionStrategy newStrategy)
+    {
+         _strategy = newStrategy;
+    }
+}
+
+/++
+ + A structure used to compress data incrementally. For one-shot compression,
+ + use `compress` function.
  +
  + All the compressed data produced by calls to `compress`, `compressPending`
  + and `flush` should be concatenated together.
@@ -217,49 +394,26 @@ public:
      + Params:
      + buffer = The internal buffer which serves as an output for the compressed
      +          data.
-     + header = Header to use for the compressed data. See `DataHeader` for details.
-     + compressionLevel = A number between `-1` and `9`: `0` indicates no
-     +                    compression at all, `1` gives the best speed but poor
-     +                    compression, `9` gives the best compression, but is slow,
-     +                    `-1` is a default compromise between speed and compression
-     +                    (currently equivalent to level 6).
-     + windowBits = Controls the size of the history buffer (i.e. window size)
-     +              used when compressing data. It is the base `2` logarithm of
-     +              window size. Must be a number from `9` (`512`-byte window)
-     +              to `15` (`32`KB window - default).
-     + memoryLevel = Specifies how much memory should be allocated for the
-     +               internal compression state of the zlib library. Must be
-     +               a number from `1` - uses minimum memory but is slow and
-     +               reduces compression ratio, to `9` - using maximum memory
-     +               for the best speed and compression. The default value
-     +               is `8`. The approximate memory requirements are (in bytes):
-     +               `(1 << (windowBits+2)) + (1 << (memLevel+9))` plus a few
-     +               kilobytes for small objects.
-     + strategy = Tunes the compression algorithm. See `CompressionStrategy` for details.
+     + policy = A policy defining different aspects of the compression process.
      +
      + Throws: `ZlibException` if unable to initialize the zlib library, e.g.
      +         there is no enough memory or the library version is incompatible.
      +/
-    this(ubyte[] buffer,
-        DataHeader header = DataHeader.zlib,
-        int compressionLevel = CompressionLevel.default_,
-        int windowBits = 15,
-        int memoryLevel = 8,
-        CompressionStrategy strategy = CompressionStrategy.default_)
+    this(ubyte[] buffer, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
     in
     {
-        assert(-1 <= compressionLevel && compressionLevel <= 9);
-        assert(9 <= windowBits && windowBits <= 15);
-        assert(1 <= memoryLevel && memoryLevel <= 9);
-        assert(header != DataHeader.automatic);
+        assert(policy.header != DataHeader.automatic);
     }
     body
     {
         _buffer = buffer;
-        immutable windowBitsValue = getWindowBitsValue(windowBits, header);
-        immutable status = c_zlib.deflateInit2(&_zlibStream, compressionLevel,
+        immutable status = c_zlib.deflateInit2(
+            &_zlibStream,
+            policy.compressionLevel,
             CompressionMethod.deflate,
-            windowBitsValue, memoryLevel, strategy);
+            policy.windowBitsWithHeader,
+            policy.memoryLevel,
+            policy.strategy);
 
         if (status != ZlibStatus.ok)
             throw new ZlibException(status);
