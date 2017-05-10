@@ -486,7 +486,7 @@ public:
     {
         uint bytes;
         // Casting away const here is safe as deflatePending does not modify the stream.
-        immutable status = c_zlib.deflatePending(cast(c_zlib.z_stream*)&_zlibStream, &bytes, null);
+        immutable status = c_zlib.deflatePending(cast(c_zlib.z_stream*) &_zlibStream, &bytes, null);
         // This structure ensures a consistent state of the stream.
         assert(status == ZlibStatus.ok);
         return bytes;
@@ -648,6 +648,16 @@ public:
 }
 
 /++
+ + Get an upper bound of the compressed data size. It gives a correct estimate
+ + only when called on just created `Compressor` and when all the data will be
+ + compressed at once.
+ +/
+private size_t getCompressedSizeBound(ref Compressor comp, size_t inputLength)
+{
+    return c_zlib.deflateBound(&comp._zlibStream, inputLength);
+}
+
+/++
  + Compresses at once all the bytes using the given compression policy.
  +
  + Params:
@@ -663,11 +673,10 @@ void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy
     debug(zlib) writeln("compress!void[]");
     ubyte[] buffer;
     auto comp = Compressor(buffer, policy);
-    // Get upper bound of the compressed data size.
-    immutable bufSizeBound = c_zlib.deflateBound(&comp._zlibStream, data.length);
+    immutable bufSizeBound = getCompressedSizeBound(comp, data.length);
     comp.buffer = new ubyte[bufSizeBound];
     comp.input = data;
-    return cast(void[])comp.flush();
+    return cast(void[]) comp.flush();
 }
 
 import dcompress.primitives : isCompressInput, isCompressOutput;
@@ -675,62 +684,50 @@ import dcompress.primitives : isCompressInput, isCompressOutput;
 /++
  + ditto
  +/
-void[] compress(R)(R data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
-if (isCompressInput!R)
+void[] compress(InR)(InR data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+if (isCompressInput!InR)
 {
     debug(zlib) writeln("compress!Range");
     immutable chunkSize = 1024;
 
-    import std.range.primitives : ElementType, hasLength;
+    import std.range.primitives : ElementType;
     import std.traits : Unqual;
-    static if (is(Unqual!(ElementType!R) == ubyte))
+    static if (is(Unqual!(ElementType!InR) == ubyte))
     {
-        static if (hasLength!R)
-        {
-            ubyte[] input = new ubyte[data.length];
-            return compress(input, policy);
-        }
-        else
-        {
-            void[] output;
-            ubyte[] buffer = new ubyte[chunkSize];
-            auto comp = Compressor(buffer, policy);
+        // TODO Consider making use of data.length (if available).
+        // Getting upper bound of output works only if data is being compressed
+        // at once what would require allocating possibly a very large buffer
+        // for input. Maybe make it an argument switch?
+        debug(zlib) writeln("ElementType!InR == ubyte");
+        void[] output;
+        ubyte[] buffer = new ubyte[chunkSize];
+        auto comp = Compressor(buffer, policy);
 
-            ubyte[] input = new ubyte[chunkSize];
-            while (!data.empty)
+        ubyte[] chunk = new ubyte[chunkSize];
+        while (!data.empty)
+        {
+            foreach (i; 0 .. chunkSize)
             {
-                foreach (i; 0 .. chunkSize)
-                {
-                    input[i] = data.front;
-                    data.popFront();
-                }
-                output ~= comp.compress(input);
-                while (!comp.inputProcessed)
-                    output ~= comp.compressPending();
+                chunk[i] = data.front;
+                data.popFront();
             }
-            do
-            {
-                output ~= comp.flush();
-            } while (comp.outputPending);
-            return output;
+            comp.compressAll(chunk, output);
         }
+        comp.flushAll(output);
+        return output;
     }
-    else // isArray!(ElementType!R)
+    else // isArray!(ElementType!InR)
     {
+        debug(zlib) writeln("isArray!(ElementType!InR)");
         void[] output;
         ubyte[] buffer = new ubyte[chunkSize];
         auto comp = Compressor(buffer, policy);
 
         foreach (chunk; data)
         {
-            output ~= comp.compress(chunk);
-            while (!comp.inputProcessed)
-                output ~= comp.compressPending();
+            comp.compressAll(chunk, output);
         }
-        do
-        {
-            output ~= comp.flush();
-        } while (comp.outputPending);
+        comp.flushAll(output);
         return output;
     }
 }
@@ -746,53 +743,122 @@ if (isCompressInput!R)
  +
  + Throws: `ZlibException` if any error occurs.
  +/
-void compress(R)(const(void)[] data, R output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
-if (isCompressOutput!R)
+void compress(OutR)(const(void)[] data, ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+if (isCompressOutput!OutR)
 {
     debug(zlib) writeln("compress!(void[], OutputRange)");
 
     import std.traits : Unqual, isArray;
-    static if (isArray!R)
+    static if (isArray!OutR)
     {
+        debug(zlib) writeln("isArray!OutR");
         void[] buffer = output;
         auto comp = Compressor(buffer, policy);
-        // Get upper bound of the compressed data size.
-        immutable bufSizeBound = c_zlib.deflateBound(&comp._zlibStream, data.length);
+        immutable bufSizeBound = getCompressedSizeBound(comp, data.length);
         if (bufSizeBound > buffer.length)
         {
             buffer.length = bufSizeBound;
             comp.buffer = buffer;
         }
         comp.input = data;
-        comp.flush();
+        output = cast(OutR) comp.flush();
     }
     else
     {
+        debug(zlib) writeln("isArray!OutR == false");
         immutable chunkSize = 1024;
 
         ubyte[] buffer = new ubyte[chunkSize];
         auto comp = Compressor(buffer, policy);
 
         import std.range : chunks;
-        import std.range.primitives : put;
         foreach (chunk; data.chunks(chunkSize))
         {
-            put(comp.compress(chunk), output);
-            while (!comp.inputProcessed)
-                put(comp.compressPending(), output);
+            comp.compressAll(chunk, output);
         }
-        do
-        {
-            put(comp.flush(), output);
-        } while (comp.outputPending);
+        comp.flushAll(output);
     }
 }
 
 /++
  + ditto
  +/
-void compress(InR, OutR)(InR data, OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+void compress(InR, OutR)(InR data, ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 if (isCompressInput!InR && isCompressOutput!OutR)
 {
     debug(zlib) writeln("compress!(InputRange, OutputRange)");
+
+    immutable chunkSize = 1024;
+
+    import std.range.primitives : ElementType, put;
+    import std.traits : Unqual, isArray;
+    debug(zlib) writeln("isArray!OutR == " ~ isArray!OutR);
+    static if (is(Unqual!(ElementType!InR) == ubyte))
+    {
+        debug(zlib) writeln("ElementType!InR == ubyte");
+
+        ubyte[] buffer = new ubyte[chunkSize];
+        auto comp = Compressor(buffer, policy);
+
+        ubyte[] chunk = new ubyte[chunkSize];
+        while (!data.empty)
+        {
+            foreach (i; 0 .. chunkSize)
+            {
+                chunk[i] = data.front;
+                data.popFront();
+            }
+            comp.compressAll(chunk, output);
+        }
+        comp.flushAll(output);
+    }
+    else // isArray!(ElementType!InR)
+    {
+        debug(zlib) writeln("isArray!(ElementType!InR)");
+        ubyte[] buffer = new ubyte[chunkSize];
+        auto comp = Compressor(buffer, policy);
+
+        foreach (chunk; data)
+        {
+            comp.compressAll(chunk, output);
+        }
+        comp.flushAll(output);
+    }
+}
+
+private void compressAll(OutR)(ref Compressor comp, const(void)[] data, ref OutR output)
+if (isCompressOutput!OutR)
+{
+    import std.traits : isArray;
+    static if (isArray!OutR)
+    {
+        output ~= comp.compress(data);
+        while (!comp.inputProcessed)
+            output ~= comp.compressPending();
+    }
+    else
+    {
+        import std.range.primitives : put;
+        put(output, comp.compress(data));
+        while (!comp.inputProcessed)
+            put(output, comp.compressPending());
+    }
+}
+
+private void flushAll(OutR)(ref Compressor comp, ref OutR output)
+if (isCompressOutput!OutR)
+{
+    do
+    {
+        import std.traits : isArray;
+        static if (isArray!OutR)
+        {
+            output ~= comp.flush();
+        }
+        else
+        {
+            import std.range.primitives : put;
+            put(output, comp.flush());
+        }
+    } while (comp.outputPending);
 }
