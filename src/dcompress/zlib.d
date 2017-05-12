@@ -113,7 +113,9 @@ enum CompressionStrategy
  + Supported headers for the compressed data.
  +
  + The library supports only one compression method called `deflate`, which may
- + be wrapped around with `zlib` or `gzip` headers.
+ + be wrapped around with `zlib` or `gzip` headers, including integrity check
+ + values.
+ +
  + The `zlib` format was designed to be compact and fast, for use in memory and
  + on communications channels, makes use of `Adler-32` for integrity check.
  + The `gzip` format was designed for a single file compression on file systems,
@@ -131,7 +133,7 @@ enum DataHeader
     /// gzip wrapper around a deflate stream. See the specification
     /// $(LINK2 https://tools.ietf.org/html/rfc1952, RFC 1952).
     gzip,
-    /// Automatic header detection for decompressing functions.
+    /// Automatic header detection - only for decompressing.
     automatic
 }
 
@@ -181,7 +183,7 @@ public:
     }
 
     /++
-     + Header to wrap the compressed data. See `DataHeader` for details.
+     + Header to wrap the compressed data with. See `DataHeader` for details.
      +
      + Returns: The current header value.
      +/
