@@ -463,8 +463,7 @@ public:
     }
     body
     {
-        import std.typecons : nullable;
-        _buffer = newBuffer.nullable;
+        _buffer = newBuffer;
     }
 }
 
@@ -560,10 +559,7 @@ public:
         auto comp = Compressor(policy);
 
         if (policy.buffer.isNull)
-        {
-            import std.typecons : nullable;
-            policy.buffer = nullable(new ubyte[policy.defaultBufferSize]);
-        }
+            policy.buffer = new ubyte[policy.defaultBufferSize];
         comp._policy = policy;
 
         return comp;
