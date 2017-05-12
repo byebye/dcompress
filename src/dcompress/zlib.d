@@ -6,7 +6,7 @@
  +/
 module dcompress.zlib;
 
-//debug = zlib;
+debug = zlib;
 debug(zlib)
 {
     import std.stdio;
@@ -169,17 +169,92 @@ body
 struct CompressionPolicy
 {
 private:
+    import std.typecons : Nullable;
+
     DataHeader _header = DataHeader.zlib;
     int _compressionLevel = CompressionLevel.default_;
     int _windowBits = 15;
     int _memoryLevel = 8;
     CompressionStrategy _strategy = CompressionStrategy.default_;
+    Nullable!(ubyte[]) _buffer;
+    size_t _defaultBufferSize = 1024;
+    size_t _maxInputChunkSize = 1024;
 
 public:
 
+    /++
+     + Returns the policy with options set to zlib defaults and buffer set to
+     + empty `Nullable` (see `buffer` for details).
+     +
+     + Default settings:
+     + $(OL
+     +     $(LI `header = DataHeader.zlib`)
+     +     $(LI `compressionLevel = CompressionLevel.default_`)
+     +     $(LI `windowBits = 15`)
+     +     $(LI `memoryLevel = 8`)
+     +     $(LI `strategy = CompressionStrategy.default_`)
+     +     $(LI `buffer.isEmpty == true`)
+     +     $(LI `defaultBufferSize = 1024`)
+     +     $(LI `inputChunkSize = 1024`)
+     + )
+     +/
     static CompressionPolicy defaultPolicy()
     {
          return CompressionPolicy.init;
+    }
+
+    /++
+     + Specifies the default buffer size being allocated by compressing
+     + functions when `buffer.isNull == true`.
+     +
+     + Returns: The current default size for the buffer.
+     +/
+    @property size_t defaultBufferSize()
+    {
+        return _defaultBufferSize;
+    }
+
+    /++
+     + Sets the default buffer size.
+     +
+     + Params:
+     + newSize = The new default size for the buffer, must be positive.
+     +/
+    @property void defaultBufferSize(size_t newSize)
+    in
+    {
+        assert(newSize > 0);
+    }
+    body
+    {
+         _defaultBufferSize = newSize;
+    }
+
+    /++
+     + Specifies the maximum chunk size when an input cannot be compressed
+     + directly but needs to be copied into a temporary array.
+     +
+     + Returns: The current maximum input chunk size.
+     +/
+    @property size_t maxInputChunkSize()
+    {
+        return _maxInputChunkSize;
+    }
+
+    /++
+     + Sets the maximum chunk size.
+     +
+     + Params:
+     + newMaxChunkSize = The new maximum input chunk size, must be positive.
+     +/
+    @property void maxInputChunkSize(size_t newMaxChunkSize)
+    in
+    {
+        assert(newMaxChunkSize > 0);
+    }
+    body
+    {
+         _maxInputChunkSize = newMaxChunkSize;
     }
 
     /++
@@ -338,6 +413,58 @@ public:
     {
          _strategy = newStrategy;
     }
+
+    /++
+     + Gets the buffer serving as an intermediate output for the compressed data.
+     +
+     + Returns: The current buffer.
+     +/
+    @property inout(Nullable!(ubyte[])) buffer() inout
+    {
+        return _buffer;
+    }
+
+    /++
+     + Sets the buffer to the given value.
+     +
+     + If `null`-state buffer is passed, i.e. `buffer.isNull == true`,
+     + functions using the policy will allocate the buffer according to their
+     + specification, for example `compress(void[])` reserves enough memory
+     + to fit the whole compressed data at once, whereas other functions usually
+     + allocate buffer with size equal to `defaultBufferSize`.
+     +
+     + If `newBuffer` is not in `null` state, then the underlying array should
+     + not be empty.
+     +
+     + Params:
+     + newBuffer = A `Nullable` array to be set as the buffer.
+     +/
+    @property void buffer(Nullable!(ubyte[]) newBuffer)
+    in
+    {
+        assert(newBuffer.isNull || newBuffer.get.length > 0);
+    }
+    body
+    {
+        _buffer = newBuffer;
+    }
+
+    /++
+     + Sets the buffer to the given value.
+     +
+     + Params:
+     + newBuffer = An non empty array to be set as the buffer.
+     +/
+    @property void buffer(ubyte[] newBuffer)
+    in
+    {
+        assert(newBuffer.length > 0);
+    }
+    body
+    {
+        import std.typecons : nullable;
+        _buffer = newBuffer.nullable;
+    }
 }
 
 /++
@@ -357,7 +484,7 @@ struct Compressor
 private:
 
     c_zlib.z_stream _zlibStream;
-    ubyte[] _buffer;
+    CompressionPolicy _policy;
     bool _outputPending;
 
 public:
@@ -399,25 +526,26 @@ public:
     /++
      + Creates a compressor with the given settings.
      +
+     + If `policy.buffer.isNull`, it will be allocated with size equal to
+     + `CompressionPolicy.defaultBufferSize`.
+     +
      + Params:
-     + buffer = An array to be set as the internal buffer which serves as an
-     +          output for the compressed data. The buffer is only used by
-     +          compressing methods and it may be replaced at any time.
      + policy = A policy defining different aspects of the compression process.
      +
      + Throws: `ZlibException` if unable to initialize the zlib library, e.g.
      +         there is no enough memory or the library version is incompatible.
      +/
-    this(ubyte[] buffer, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+    static Compressor create(CompressionPolicy policy = CompressionPolicy.defaultPolicy)
     in
     {
         assert(policy.header != DataHeader.automatic);
     }
     body
     {
-        _buffer = buffer;
+        Compressor comp = Compressor.init;
+
         immutable status = c_zlib.deflateInit2(
-            &_zlibStream,
+            &comp._zlibStream,
             policy.compressionLevel,
             CompressionMethod.deflate,
             policy.windowBitsWithHeader,
@@ -426,6 +554,68 @@ public:
 
         if (status != ZlibStatus.ok)
             throw new ZlibException(status);
+
+        if (policy.buffer.isNull)
+        {
+            import std.typecons : nullable;
+            policy.buffer = nullable(new ubyte[policy.defaultBufferSize]);
+        }
+        comp._policy = policy;
+
+        return comp;
+    }
+
+    /++
+     + Creates a compressor with the given settings and allocates buffer to
+     + a size sufficient to fit the compressed data assuming a one-shot
+     + compression of input with size equal to `inputLength`.
+     +
+     + The `policy.buffer` will not be touched if it has already a sufficient
+     + size, otherwise it will be reallocated.
+     +
+     + Params:
+     + inputLength = Length of an input to be compressed later on at once.
+     + policy = A policy defining different aspects of the compression process.
+     +
+     + Throws: `ZlibException` if unable to initialize the zlib library, e.g.
+     +         there is no enough memory or the library version is incompatible.
+     +/
+    static Compressor createWithSufficientBuffer(size_t inputLength,
+        CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+    in
+    {
+        assert(policy.header != DataHeader.automatic);
+    }
+    body
+    {
+        Compressor comp = Compressor.init;
+
+        comp._policy = policy;
+        immutable status = c_zlib.deflateInit2(
+            &comp._zlibStream,
+            policy.compressionLevel,
+            CompressionMethod.deflate,
+            policy.windowBitsWithHeader,
+            policy.memoryLevel,
+            policy.strategy);
+
+        if (status != ZlibStatus.ok)
+            throw new ZlibException(status);
+
+        immutable minBufferSize = comp.getCompressedSizeBound(inputLength);
+
+        if (policy.buffer.isNull)
+        {
+            import std.typecons : nullable;
+            policy.buffer = nullable(new ubyte[minBufferSize]);
+        }
+        else if (policy.buffer.get.length < minBufferSize)
+        {
+            policy.buffer.get.length = minBufferSize;
+        }
+        comp._policy = policy;
+
+        return comp;
     }
 
     ~this()
@@ -434,26 +624,25 @@ public:
     }
 
     /++
-     + Gets the current internal buffer. Note that the buffer does not remember
-     + where the compressed data ends.
+     + Gets the current policy used during the compression process.
+     +
+     + Returns: The current compression policy.
+     +/
+    @property const(CompressionPolicy) policy() const
+    {
+        return _policy;
+    }
+
+
+    /++
+     + Gets the current internal array buffer. Note that the buffer does not
+     + remember where the compressed data ends.
      +
      + Returns: The current internal buffer.
      +/
-    @property const(ubyte)[] buffer() const
+    private @property ubyte[] buffer()
     {
-         return _buffer;
-    }
-
-    /++
-     + Replaces the current internal buffer with the given one.
-     +
-     + Params:
-     + buf = An array to be set as the internal buffer which serves as an output
-     +       for the compressed data.
-     +/
-    @property void buffer(ubyte[] buf)
-    {
-         _buffer = buf;
+         return _policy.buffer.get;
     }
 
     /++
@@ -600,14 +789,9 @@ public:
     }
 
     private const(void)[] compress(FlushMode mode)
-    in
     {
-        assert(_buffer.length > 0);
-    }
-    body
-    {
-        _zlibStream.next_out = _buffer.ptr;
-        _zlibStream.avail_out = cast(uint) _buffer.length;
+        _zlibStream.next_out = buffer.ptr;
+        _zlibStream.avail_out = cast(uint) buffer.length;
 
         debug(zlib) {
             import std.stdio;
@@ -644,8 +828,8 @@ public:
             }
         }
 
-        immutable writtenBytes = _buffer.length - _zlibStream.avail_out;
-        return _buffer[0 .. writtenBytes];
+        immutable writtenBytes = buffer.length - _zlibStream.avail_out;
+        return buffer[0 .. writtenBytes];
     }
 }
 
@@ -660,7 +844,7 @@ private size_t getCompressedSizeBound(ref Compressor comp, size_t inputLength)
 }
 
 /++
- + Compresses at once all the bytes using the given compression policy.
+ + Compresses all the bytes at once using the given compression policy.
  +
  + Params:
  + data = Bytes to be compressed.
@@ -673,10 +857,12 @@ private size_t getCompressedSizeBound(ref Compressor comp, size_t inputLength)
 void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 {
     debug(zlib) writeln("compress!void[]");
-    ubyte[] buffer;
-    auto comp = Compressor(buffer, policy);
-    immutable bufSizeBound = getCompressedSizeBound(comp, data.length);
-    comp.buffer = new ubyte[bufSizeBound];
+    if (!policy.buffer.isNull)
+    {
+        // TODO
+        assert(0);
+    }
+    auto comp = Compressor.createWithSufficientBuffer(data.length, policy);
     comp.input = data;
     return cast(void[]) comp.flush();
 }
@@ -690,7 +876,6 @@ void[] compress(InR)(InR data, CompressionPolicy policy = CompressionPolicy.defa
 if (isCompressInput!InR)
 {
     debug(zlib) writeln("compress!Range");
-    immutable chunkSize = 1024;
 
     import std.range.primitives : ElementType;
     import std.traits : Unqual;
@@ -702,34 +887,17 @@ if (isCompressInput!InR)
         // for input. Maybe make it an argument switch?
         debug(zlib) writeln("ElementType!InR == ubyte");
         void[] output;
-        ubyte[] buffer = new ubyte[chunkSize];
-        auto comp = Compressor(buffer, policy);
-
-        ubyte[] chunk = new ubyte[chunkSize];
-        while (!data.empty)
-        {
-            foreach (i; 0 .. chunkSize)
-            {
-                chunk[i] = data.front;
-                data.popFront();
-            }
-            comp.compressAll(chunk, output);
-        }
-        comp.flushAll(output);
+        auto comp = Compressor.create(policy);
+        comp.compressAllByCopyChunk(data, output);
         return output;
     }
     else // isArray!(ElementType!InR)
     {
         debug(zlib) writeln("isArray!(ElementType!InR)");
-        void[] output;
-        ubyte[] buffer = new ubyte[chunkSize];
-        auto comp = Compressor(buffer, policy);
 
-        foreach (chunk; data)
-        {
-            comp.compressAll(chunk, output);
-        }
-        comp.flushAll(output);
+        void[] output;
+        auto comp = Compressor.create(policy);
+        comp.compressAllByChunk(data, output);
         return output;
     }
 }
@@ -754,30 +922,22 @@ if (isCompressOutput!OutR)
     static if (isArray!OutR)
     {
         debug(zlib) writeln("isArray!OutR");
-        void[] buffer = output;
-        auto comp = Compressor(buffer, policy);
-        immutable bufSizeBound = getCompressedSizeBound(comp, data.length);
-        if (bufSizeBound > buffer.length)
+        if (policy.buffer.isNull)
         {
-            buffer.length = bufSizeBound;
-            comp.buffer = buffer;
+            // The output will be directly reallocated this way.
+            policy.buffer = output;
         }
+        auto comp = Compressor.createWithSufficientBuffer(data.length, policy);
+        immutable bufSizeBound = comp.getCompressedSizeBound(data.length);
         comp.input = data;
         output = cast(OutR) comp.flush();
     }
     else
     {
         debug(zlib) writeln("isArray!OutR == false");
-        immutable chunkSize = 1024;
 
-        ubyte[] buffer = new ubyte[chunkSize];
-        auto comp = Compressor(buffer, policy);
-
-        import std.range : chunks;
-        foreach (chunk; data.chunks(chunkSize))
-        {
-            comp.compressAll(chunk, output);
-        }
+        auto comp = Compressor.create(policy);
+        comp.compressAll(data, output);
         comp.flushAll(output);
     }
 }
@@ -790,8 +950,6 @@ if (isCompressInput!InR && isCompressOutput!OutR)
 {
     debug(zlib) writeln("compress!(InputRange, OutputRange)");
 
-    immutable chunkSize = 1024;
-
     import std.range.primitives : ElementType, put;
     import std.traits : Unqual, isArray;
     debug(zlib) writeln("isArray!OutR == " ~ isArray!OutR);
@@ -799,33 +957,42 @@ if (isCompressInput!InR && isCompressOutput!OutR)
     {
         debug(zlib) writeln("ElementType!InR == ubyte");
 
-        ubyte[] buffer = new ubyte[chunkSize];
-        auto comp = Compressor(buffer, policy);
-
-        ubyte[] chunk = new ubyte[chunkSize];
-        while (!data.empty)
-        {
-            foreach (i; 0 .. chunkSize)
-            {
-                chunk[i] = data.front;
-                data.popFront();
-            }
-            comp.compressAll(chunk, output);
-        }
-        comp.flushAll(output);
+        auto comp = Compressor.create(policy);
+        comp.compressAllByCopyChunk(data, output);
     }
     else // isArray!(ElementType!InR)
     {
         debug(zlib) writeln("isArray!(ElementType!InR)");
-        ubyte[] buffer = new ubyte[chunkSize];
-        auto comp = Compressor(buffer, policy);
 
-        foreach (chunk; data)
-        {
-            comp.compressAll(chunk, output);
-        }
-        comp.flushAll(output);
+        auto comp = Compressor.create(policy);
+        comp.compressAllByChunk(data, output);
     }
+}
+
+private void compressAllByChunk(InR, OutR)(ref Compressor comp, ref InR data, ref OutR output)
+{
+    foreach (chunk; data)
+    {
+        comp.compressAll(chunk, output);
+    }
+    comp.flushAll(output);
+}
+
+private void compressAllByCopyChunk(InR, OutR)(ref Compressor comp, ref InR data, ref OutR output)
+{
+    // TODO On-stack allocation for chunk - argument switch?
+    immutable chunkSize = comp.policy.maxInputChunkSize;
+    ubyte[] chunk = new ubyte[chunkSize];
+    while (!data.empty)
+    {
+        foreach (i; 0 .. chunkSize)
+        {
+            chunk[i] = data.front;
+            data.popFront();
+        }
+        comp.compressAll(chunk, output);
+    }
+    comp.flushAll(output);
 }
 
 private void compressAll(OutR)(ref Compressor comp, const(void)[] data, ref OutR output)

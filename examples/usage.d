@@ -39,7 +39,9 @@ void main() {
     immutable data = ["aaa", "bbb", "ccc", "dafasdfadfaf", "dfadfa", "adfaf" ];
     immutable dataJoined = data.dup.joiner.array;
     {
-        auto comp = d_zlib.Compressor(new ubyte[2]);
+        auto policy = d_zlib.CompressionPolicy.defaultPolicy();
+        policy.buffer = new ubyte[2];
+        auto comp = d_zlib.Compressor.create(policy);
         ubyte[] output;
         foreach (chunk; data)
         {
@@ -55,7 +57,7 @@ void main() {
         writeln(output);
     }
     {
-        auto c2 = d_zlib.Compressor(new ubyte[1024]);
+        auto c2 = d_zlib.Compressor.create();
         auto o = cast(ubyte[]) c2.compress(dataJoined).dup;
         o ~= cast(ubyte[]) c2.flush();
         writeln(o);
