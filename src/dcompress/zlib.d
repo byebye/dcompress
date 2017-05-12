@@ -523,6 +523,20 @@ public:
 
     @disable this();
 
+    private this(CompressionPolicy policy)
+    {
+        immutable status = c_zlib.deflateInit2(
+            &_zlibStream,
+            policy.compressionLevel,
+            CompressionMethod.deflate,
+            policy.windowBitsWithHeader,
+            policy.memoryLevel,
+            policy.strategy);
+
+        if (status != ZlibStatus.ok)
+            throw new ZlibException(status);
+    }
+
     /++
      + Creates a compressor with the given settings.
      +
@@ -542,18 +556,7 @@ public:
     }
     body
     {
-        Compressor comp = Compressor.init;
-
-        immutable status = c_zlib.deflateInit2(
-            &comp._zlibStream,
-            policy.compressionLevel,
-            CompressionMethod.deflate,
-            policy.windowBitsWithHeader,
-            policy.memoryLevel,
-            policy.strategy);
-
-        if (status != ZlibStatus.ok)
-            throw new ZlibException(status);
+        auto comp = Compressor(policy);
 
         if (policy.buffer.isNull)
         {
@@ -588,19 +591,7 @@ public:
     }
     body
     {
-        Compressor comp = Compressor.init;
-
-        comp._policy = policy;
-        immutable status = c_zlib.deflateInit2(
-            &comp._zlibStream,
-            policy.compressionLevel,
-            CompressionMethod.deflate,
-            policy.windowBitsWithHeader,
-            policy.memoryLevel,
-            policy.strategy);
-
-        if (status != ZlibStatus.ok)
-            throw new ZlibException(status);
+        auto comp = Compressor(policy);
 
         immutable minBufferSize = comp.getCompressedSizeBound(inputLength);
 
@@ -857,11 +848,7 @@ private size_t getCompressedSizeBound(ref Compressor comp, size_t inputLength)
 void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 {
     debug(zlib) writeln("compress!void[]");
-    if (!policy.buffer.isNull)
-    {
-        // TODO
-        assert(0);
-    }
+
     auto comp = Compressor.createWithSufficientBuffer(data.length, policy);
     comp.input = data;
     return cast(void[]) comp.flush();
@@ -881,11 +868,23 @@ if (isCompressInput!InR)
     import std.traits : Unqual;
     static if (is(Unqual!(ElementType!InR) == ubyte))
     {
-        // TODO Consider making use of data.length (if available).
-        // Getting upper bound of output works only if data is being compressed
-        // at once what would require allocating possibly a very large buffer
-        // for input. Maybe make it an argument switch?
         debug(zlib) writeln("ElementType!InR == ubyte");
+
+        import std.range.primitives : hasLength;
+        static if (hasLength!InR)
+        {
+            if (policy.maxInputChunkSize >= data.length)
+            {
+                debug(zlib) writeln("hasLength!InR && policy.maxInputChunkSize >= data.length");
+
+                auto comp = Compressor.createWithSufficientBuffer(data.length, policy);
+                auto input = new ubyte[data.length];
+                import std.range.mutation : copy;
+                copy(data, input);
+                comp.input = input;
+                return comp.flush();
+            }
+        }
         void[] output;
         auto comp = Compressor.create(policy);
         comp.compressAllByCopyChunk(data, output);
@@ -922,13 +921,13 @@ if (isCompressOutput!OutR)
     static if (isArray!OutR)
     {
         debug(zlib) writeln("isArray!OutR");
+
         if (policy.buffer.isNull)
         {
             // The output will be directly reallocated this way.
             policy.buffer = output;
         }
         auto comp = Compressor.createWithSufficientBuffer(data.length, policy);
-        immutable bufSizeBound = comp.getCompressedSizeBound(data.length);
         comp.input = data;
         output = cast(OutR) comp.flush();
     }
@@ -937,8 +936,18 @@ if (isCompressOutput!OutR)
         debug(zlib) writeln("isArray!OutR == false");
 
         auto comp = Compressor.create(policy);
-        comp.compressAll(data, output);
-        comp.flushAll(output);
+        immutable minBufferSize = comp.getCompressedSizeBound(data.length);
+        if (minBufferSize <= comp.buffer.length)
+        {
+            import std.range.mutation : copy;
+            comp.input = data;
+            comp.flush().copy(output);
+        }
+        else
+        {
+            comp.compressAll(data, output);
+            comp.flushAll(output);
+        }
     }
 }
 
@@ -950,13 +959,26 @@ if (isCompressInput!InR && isCompressOutput!OutR)
 {
     debug(zlib) writeln("compress!(InputRange, OutputRange)");
 
-    import std.range.primitives : ElementType, put;
+    import std.range.primitives : ElementType;
     import std.traits : Unqual, isArray;
-    debug(zlib) writeln("isArray!OutR == " ~ isArray!OutR);
     static if (is(Unqual!(ElementType!InR) == ubyte))
     {
         debug(zlib) writeln("ElementType!InR == ubyte");
 
+        import std.range.primitives : hasLength;
+        static if (hasLength!InR)
+        {
+            if (policy.maxInputChunkSize >= data.length)
+            {
+                debug(zlib) writeln("hasLength!InR && policy.maxInputChunkSize >= data.length");
+
+                import std.range.mutation : copy;
+                auto input = new ubyte[data.length];
+                copy(data, input);
+                compress(input, output, policy);
+                return;
+            }
+        }
         auto comp = Compressor.create(policy);
         comp.compressAllByCopyChunk(data, output);
     }
