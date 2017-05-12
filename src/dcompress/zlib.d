@@ -245,12 +245,13 @@ public:
      + Sets the maximum chunk size.
      +
      + Params:
-     + newMaxChunkSize = The new maximum input chunk size, must be positive.
+     + newMaxChunkSize = The new maximum input chunk size, must be positive but
+     +                   not greater than `4`GB.
      +/
     @property void maxInputChunkSize(size_t newMaxChunkSize)
     in
     {
-        assert(newMaxChunkSize > 0);
+        assert(0 < newMaxChunkSize && newMaxChunkSize <= 4 * 1024UL ^^ 3);
     }
     body
     {
