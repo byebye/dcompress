@@ -502,10 +502,12 @@ public:
         sync    = c_zlib.Z_SYNC_FLUSH,
         /// All output is flushed as with `FlushMode.sync` and the compression
         /// state is reset so that decompression can restart from this point,
-        /// e.g. if previous compressed data has been damaged or if random
+        /// e.g. if previously compressed data has been damaged or if random
         /// access is desired.
         full    = c_zlib.Z_FULL_FLUSH,
-        /// Default mode. Used to correctly finish the compression process.
+        /// Default mode. Used to correctly finish the compression process i.e.
+        /// all pending output is flushed and, unless the data is being
+        /// compressed with `DataHeader.rawDeflate`, with CRC value appended.
         finish  = c_zlib.Z_FINISH,
         /// A deflate block is completed and emitted, as for `FlushMode.sync`,
         /// except the output is not aligned on a byte boundary and up to seven
@@ -566,6 +568,49 @@ public:
     }
 
     /++
+     + Default policy forces allocation of the buffer during the creation.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.create -- default policy");
+        auto comp = Compressor.create();
+        auto policy = CompressionPolicy.defaultPolicy;
+        // The buffer is being overriden in the policy stored by the Compressor.
+        assert(policy.buffer.isNull);
+        assert(comp.buffer.length == policy.defaultBufferSize);
+    }
+
+    /++
+     + Configuration may be tweaked on behalf of a policy, especially serves
+     + to provide a custom buffer.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.create -- custom buffer on heap");
+        auto policy = CompressionPolicy.defaultPolicy;
+        auto buffer = new ubyte[10];
+        policy.buffer = buffer;
+
+        auto comp = Compressor.create(policy);
+        assert(comp.buffer.ptr == buffer.ptr);
+        assert(comp.buffer.length == buffer.length);
+
+        debug(zlib) writeln("Compressor.create -- custom config and buffer on stack");
+        ubyte[5] bufStatic;
+        policy.buffer = bufStatic[];
+        policy.compressionLevel = 2;
+
+        auto compStatic = Compressor.create(policy);
+        assert(compStatic.buffer.ptr == bufStatic.ptr);
+        assert(compStatic.buffer.length == bufStatic.length);
+        assert(compStatic.policy.compressionLevel == 2);
+
+        // The previous Compressor's settings should not be modified.
+        assert(comp.buffer.ptr == buffer.ptr);
+        assert(comp.policy.compressionLevel == CompressionPolicy.defaultPolicy.compressionLevel);
+    }
+
+    /++
      + Creates a compressor with the given settings and allocates buffer to
      + a size sufficient to fit the compressed data assuming a one-shot
      + compression of input with size equal to `inputLength`.
@@ -606,6 +651,42 @@ public:
         return comp;
     }
 
+    /++
+     + One-shot compression may be done using `flush` assuming the buffer has enough space.
+     +/
+    // TODO more tests with different headers <-- create set of header to test.
+    unittest
+    {
+        debug(zlib) writeln("Compressor.createWithSufficientBuffer -- one-shot compression");
+        auto data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
+
+        auto comp = Compressor.createWithSufficientBuffer(data.length);
+        comp.input = data;
+        auto compressed = comp.flush();
+
+        assert(comp.buffer.length >= compressed.length);
+        assert(comp.outputPending == false);
+        // TODO Do not depend on std.zlib.
+        import sz = std.zlib;
+        assert(compressed == sz.compress(data));
+    }
+
+    /++
+     + If the buffer is already large enough, do not touch it.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.createWithSufficientBuffer -- do not reallocate large enough buffer");
+        auto data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
+
+        auto policy = CompressionPolicy.defaultPolicy;
+        policy.buffer = new ubyte[200];
+        auto comp = Compressor.createWithSufficientBuffer(data.length, policy);
+
+        assert(comp.buffer.ptr == policy.buffer.ptr);
+        assert(comp.buffer.length == 200);
+    }
+
     ~this()
     {
         c_zlib.deflateEnd(&_zlibStream);
@@ -620,7 +701,6 @@ public:
     {
         return _policy;
     }
-
 
     /++
      + Gets the current internal array buffer. Note that the buffer does not
@@ -649,14 +729,38 @@ public:
     }
 
     /++
+     + Check whether there is output left from previous calls to `compress`.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.outputPending");
+        auto data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+        auto policy = CompressionPolicy.defaultPolicy;
+        // Very small buffer just for presentation purposes.
+        policy.buffer = new ubyte[1];
+        auto comp = Compressor.create(policy);
+
+        auto output = comp.compress(data);
+        assert(output.length == 1);
+        assert(comp.outputPending);
+        // More compressed data without providing more input.
+        output ~= comp.compressPending();
+        assert(output.length == 2);
+    }
+
+    /++
      + Checks how many complete bytes of the compressed data is available to
      + retrieve without providing more input.
      +
-     + It can be done either by calling `compressPending` or `flush`.
+     + The data can be retrieved by calling `compressPending` or `flush`.
+     + Pending bytes may increase after call to `flush` as it forces the
+     + compression of remaining data.
      +
      + Note: There may be more compressed bytes kept internally by the zlib
-     +       library, so this method does not give good estimate of the total
-     +       data size that is to be produced.
+     +       library and not counted by this method, so it does not give good
+     +       estimate of the total data size that is to be produced.
+     +
      +
      + Returns: The number of compressed bytes that can be obtained without
      +          providing additional input.
@@ -669,6 +773,36 @@ public:
         // This structure ensures a consistent state of the stream.
         assert(status == ZlibStatus.ok);
         return bytes;
+    }
+
+    /++
+     + Check how much output is left from previous calls to `compress`.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.bytesPending");
+        auto data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+        auto policy = CompressionPolicy.defaultPolicy;
+        // Very small buffer just for presentation purposes.
+        policy.buffer = new ubyte[1];
+        auto comp = Compressor.create(policy);
+
+        // zlib header which is returned immediately occupies 2 bytes.
+        // More output may not be returned until additional input has been
+        // provided - for a better compression.
+        auto output = comp.compress(data);
+        assert(output.length == 1);
+        assert(comp.bytesPending == 1);
+        // More compressed data without providing more input.
+        output ~= comp.compressPending();
+        assert(output.length == 2);
+        assert(comp.bytesPending == 0);
+        // Force a return of the compressed data using `flush` (which still
+        // will not fit in such a small buffer).
+        output ~= comp.flush();
+        assert(output.length == 3);
+        assert(comp.bytesPending > 0);
     }
 
     /++
@@ -687,6 +821,59 @@ public:
     }
 
     /++
+     + Check if more data to compress may be provided safely.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.inputProcessed");
+        auto data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+        auto policy = CompressionPolicy.defaultPolicy;
+        // Very small buffer just for presentation purposes.
+        policy.buffer = new ubyte[1];
+        auto comp = Compressor.create(policy);
+
+        // zlib header which is returned immediately occupies 2 bytes and
+        // will delay the compression process.
+        auto output = comp.compress(data);
+        assert(output.length == 1);
+        assert(comp.inputProcessed == false);
+        // Grabbing the 2-byte header allows to compress the input entirely
+        // in the next call.
+        output ~= comp.compressPending();
+        output ~= comp.compressPending();
+        assert(comp.inputProcessed);
+    }
+
+    /++
+     + Typical use case while compressing multiple chunks of data.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.inputProcessed -- multiple chunks of data");
+        auto data = ["Lorem ipsum", " dolor sit amet,", " consectetur", " adipiscing elit. "];
+
+        auto policy = CompressionPolicy.defaultPolicy;
+        // Very small buffer just for testing purposes.
+        policy.buffer = new ubyte[2];
+        auto comp = Compressor.create(policy);
+
+        void[] output;
+        foreach (chunk; data)
+        {
+            output ~= comp.compress(chunk);
+            while (!comp.inputProcessed)
+                output ~= comp.compressPending();
+        }
+        do
+        {
+            output ~= comp.flush();
+        } while (comp.outputPending);
+
+        // TODO assert
+    }
+
+    /++
      + Only sets the input to be compressed in the next call `compressPending`
      + or `flush`, without advancing the compression process.
      +
@@ -699,6 +886,24 @@ public:
     {
         _zlibStream.next_in = cast(const(ubyte)*) data.ptr;
         _zlibStream.avail_in = cast(uint) data.length; // TODO check for overflow
+    }
+
+    /++
+     + Setting the input may be used to force one-shot compression using `flush`,
+     + although for this kind compression `compress` function are implemented.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.input -- one-shot compression");
+        auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+        auto comp = Compressor.create();
+        comp.input = data;
+        // Warning: for one-shot compression enough buffer space needs to be provided.
+        auto output = comp.flush();
+        assert(comp.inputProcessed);
+        assert(comp.outputPending == false);
+        // TODO assert
     }
 
     /++
@@ -738,6 +943,20 @@ public:
     }
 
     /++
+     + Compress the provided data.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.compressPending");
+        auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+        auto comp = Compressor.create();
+        auto output = comp.compress(data);
+        assert(output.length > 0);
+        // TODO assert correctness
+    }
+
+    /++
      + Retrieves the remaining compressed data that didn't fit into the internal
      + buffer during call to `compress` and continues to compress the input.
      +
@@ -756,11 +975,33 @@ public:
     }
 
     /++
-     + Flushes the remaining compressed data.
+     + Retrieve the remaining compressed data that didn't fit into the buffer.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.compressPending");
+        auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+        auto policy = CompressionPolicy.defaultPolicy;
+        // Very small buffer just for testing purposes.
+        policy.buffer = new ubyte[1];
+        auto comp = Compressor.create(policy);
+
+        // zlib header is returned immediately and occupies 2 bytes.
+        auto output = comp.compress(data);
+        assert(output.length == 1);
+        assert(comp.outputPending);
+        output ~= comp.compressPending();
+        assert(output.length == 2);
+    }
+
+    /++
+     + Flushes the remaining compressed data and finishes compressing the input.
      +
      + Note: Repeat invoking this method with the same `mode` argument until
      +       `outputPending == false`, otherwise the compression may be invalid
-     +       and exception may be thrown.
+     +       and exception may be thrown. After that the `Compressor` may be
+     +       reused to compress more data.
      +
      + Params:
      + mode = Mode to be applied for flushing. See `FlushMode` for details.
@@ -774,6 +1015,54 @@ public:
     const(void)[] flush(FlushMode mode = FlushMode.finish)
     {
         return compress(mode);
+    }
+
+    /++
+     + Flush the remaining output.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.flush");
+        auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+        auto comp = Compressor.create();
+
+        // zlib header is returned immediately and occupies 2 bytes.
+        auto output = comp.compress(data);
+        assert(output.length == 2);
+        // Input processed but data not returned.
+        assert(comp.inputProcessed);
+        assert(comp.outputPending == false);
+
+        output ~= comp.flush();
+        assert(comp.outputPending == false);
+        assert(output.length > 2);
+    }
+
+    /++
+     + Flush should be repeated with same mode until `outputPending == false`.
+     +/
+    unittest
+    {
+        debug(zlib) writeln("Compressor.flush -- flush mode changed");
+        auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+        auto policy = CompressionPolicy.defaultPolicy;
+        // Very small buffer just for testing purposes.
+        policy.buffer = new ubyte[2];
+        auto comp = Compressor.create(policy);
+
+        auto output = comp.compress(data);
+        assert(output.length == 2);
+        output ~= comp.flush();
+        // Repeat with default mode.
+        output ~= comp.flush(FlushMode.finish);
+        assert(output.length == 6);
+
+        import std.exception : assertThrown;
+        // Exception thrown - mode changed while output is pending.
+        assert(comp.outputPending);
+        assertThrown!ZlibException(comp.flush(FlushMode.full));
     }
 
     private const(void)[] compress(FlushMode mode)
@@ -812,6 +1101,7 @@ public:
             }
             else
             {
+                // TODO Consider calling deflateEnd
                 throw new ZlibException(status);
             }
         }
