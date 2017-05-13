@@ -209,7 +209,7 @@ public:
      +
      + Returns: The current default size for the buffer.
      +/
-    @property size_t defaultBufferSize()
+    @property size_t defaultBufferSize() const
     {
         return _defaultBufferSize;
     }
@@ -236,7 +236,7 @@ public:
      +
      + Returns: The current maximum input chunk size.
      +/
-    @property size_t maxInputChunkSize()
+    @property size_t maxInputChunkSize() const
     {
         return _maxInputChunkSize;
     }
@@ -1141,13 +1141,26 @@ void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy
     return cast(void[]) comp.flush();
 }
 
+/++
+ + One-shot compression of an array of data.
+ +/
+unittest
+{
+    debug(zlib) writeln("compress(void[])");
+    auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+    auto output = compress(data);
+    // TODO assert correctness
+}
+
 import dcompress.primitives : isCompressInput, isCompressOutput;
+import std.traits : isArray;
 
 /++
  + ditto
  +/
 void[] compress(InR)(InR data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
-if (isCompressInput!InR)
+if (!isArray!InR && isCompressInput!InR)
 {
     debug(zlib) writeln("compress!Range");
 
@@ -1166,7 +1179,7 @@ if (isCompressInput!InR)
 
                 auto comp = Compressor.createWithSufficientBuffer(data.length, policy);
                 auto input = new ubyte[data.length];
-                import std.range.mutation : copy;
+                import std.algorithm.mutation : copy;
                 copy(data, input);
                 comp.input = input;
                 return comp.flush();
@@ -1186,6 +1199,27 @@ if (isCompressInput!InR)
         comp.compressAllByChunk(data, output);
         return output;
     }
+}
+
+/++
+ + One-shot compression of an input range of data.
+ +/
+unittest
+{
+    debug(zlib) writeln("compress(InputRange)");
+    const(void)[] data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+    struct InputRange
+    {
+        const(ubyte)[] s;
+        @property ubyte front() { return s[0]; }
+        @property void popFront() { s = s[1 .. $]; }
+        @property bool empty() { return s.length == 0; }
+    }
+    auto range = InputRange(cast(ubyte[]) data);
+    auto output = compress(range);
+
+    // TODO assert correctness
 }
 
 /++
@@ -1226,9 +1260,10 @@ if (isCompressOutput!OutR)
         immutable minBufferSize = comp.getCompressedSizeBound(data.length);
         if (minBufferSize <= comp.buffer.length)
         {
-            import std.range.mutation : copy;
+            import std.range.primitives : put;
             comp.input = data;
-            comp.flush().copy(output);
+            auto outArray = cast(const(ubyte)[]) comp.flush();
+            put(output, outArray);
         }
         else
         {
@@ -1239,10 +1274,30 @@ if (isCompressOutput!OutR)
 }
 
 /++
+ + One-shot compression of an array of data to an output range.
+ +/
+unittest
+{
+    debug(zlib) writeln("compress(void[], OutputRange)");
+    const(void)[] data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+    struct OutputRange
+    {
+        ubyte[] buf;
+        @property void put(ubyte b) { buf ~= b; }
+    }
+
+    OutputRange output;
+    compress(data, output);
+    assert(output.buf == compress(data));
+    // TODO assert correctness
+}
+
+/++
  + ditto
  +/
 void compress(InR, OutR)(InR data, ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
-if (isCompressInput!InR && isCompressOutput!OutR)
+if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
 {
     debug(zlib) writeln("compress!(InputRange, OutputRange)");
 
@@ -1259,7 +1314,7 @@ if (isCompressInput!InR && isCompressOutput!OutR)
             {
                 debug(zlib) writeln("hasLength!InR && policy.maxInputChunkSize >= data.length");
 
-                import std.range.mutation : copy;
+                import std.algorithm.mutation : copy;
                 auto input = new ubyte[data.length];
                 copy(data, input);
                 compress(input, output, policy);
@@ -1276,6 +1331,36 @@ if (isCompressInput!InR && isCompressOutput!OutR)
         auto comp = Compressor.create(policy);
         comp.compressAllByChunk(data, output);
     }
+}
+
+/++
+ + One-shot compression of an input range of data to an output range.
+ +/
+unittest
+{
+    debug(zlib) writeln("compress(InputRange)");
+    const(void)[] data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+    struct InputRange
+    {
+        const(ubyte)[] s;
+        @property ubyte front() { return s[0]; }
+        @property void popFront() { s = s[1 .. $]; }
+        @property bool empty() { return s.length == 0; }
+        @property size_t length() { return s.length; }
+    }
+
+    struct OutputRange
+    {
+        ubyte[] buf;
+        @property void put(ubyte b) { buf ~= b; }
+    }
+
+    auto range = InputRange(cast(ubyte[]) data);
+    OutputRange output;
+    compress(range, output);
+    assert(output.buf == compress(data));
+    // TODO assert correctness
 }
 
 private void compressAllByChunk(InR, OutR)(ref Compressor comp, ref InR data, ref OutR output)
@@ -1298,6 +1383,8 @@ private void compressAllByCopyChunk(InR, OutR)(ref Compressor comp, ref InR data
         {
             chunk[i] = data.front;
             data.popFront();
+            if (data.empty)
+                break;
         }
         comp.compressAll(chunk, output);
     }
@@ -1317,9 +1404,9 @@ if (isCompressOutput!OutR)
     else
     {
         import std.range.primitives : put;
-        put(output, comp.compress(data));
+        put(output, cast(const(ubyte)[]) comp.compress(data));
         while (!comp.inputProcessed)
-            put(output, comp.compressPending());
+            put(output, cast(const(ubyte)[]) comp.compressPending());
     }
 }
 
@@ -1336,7 +1423,7 @@ if (isCompressOutput!OutR)
         else
         {
             import std.range.primitives : put;
-            put(output, comp.flush());
+            put(output, cast(const(ubyte)[]) comp.flush());
         }
     } while (comp.outputPending);
 }
