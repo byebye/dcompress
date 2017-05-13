@@ -176,7 +176,7 @@ private:
     int _windowBits = 15;
     int _memoryLevel = 8;
     CompressionStrategy _strategy = CompressionStrategy.default_;
-    Nullable!(ubyte[]) _buffer;
+    Nullable!(void[]) _buffer;
     size_t _defaultBufferSize = 1024;
     size_t _maxInputChunkSize = 1024;
 
@@ -420,7 +420,7 @@ public:
      +
      + Returns: The current buffer.
      +/
-    @property inout(Nullable!(ubyte[])) buffer() inout
+    @property inout(Nullable!(void[])) buffer() inout
     {
         return _buffer;
     }
@@ -440,7 +440,7 @@ public:
      + Params:
      + newBuffer = A `Nullable` array to be set as the buffer.
      +/
-    @property void buffer(Nullable!(ubyte[]) newBuffer)
+    @property void buffer(Nullable!(void[]) newBuffer)
     in
     {
         assert(newBuffer.isNull || newBuffer.get.length > 0);
@@ -456,7 +456,7 @@ public:
      + Params:
      + newBuffer = An non empty array to be set as the buffer.
      +/
-    @property void buffer(ubyte[] newBuffer)
+    @property void buffer(void[] newBuffer)
     in
     {
         assert(newBuffer.length > 0);
@@ -644,7 +644,10 @@ public:
         }
         else if (policy.buffer.get.length < minBufferSize)
         {
-            policy.buffer.get.length = minBufferSize;
+            // Reallocate existing buffer.
+            auto buffer = policy.buffer.get;
+            buffer.length = minBufferSize;
+            policy.buffer = buffer;
         }
         comp._policy = policy;
 
@@ -708,7 +711,7 @@ public:
      +
      + Returns: The current internal buffer.
      +/
-    private @property ubyte[] buffer()
+    private @property void[] buffer()
     {
          return _policy.buffer.get;
     }
@@ -1067,7 +1070,7 @@ public:
 
     private const(void)[] compress(FlushMode mode)
     {
-        _zlibStream.next_out = buffer.ptr;
+        _zlibStream.next_out = cast(ubyte*) buffer.ptr;
         _zlibStream.avail_out = cast(uint) buffer.length;
 
         debug(zlib) {
@@ -1157,7 +1160,24 @@ import dcompress.primitives : isCompressInput, isCompressOutput;
 import std.traits : isArray;
 
 /++
- + ditto
+ + Compresses all the bytes at once using the given compression policy.
+ +
+ + Because the zlib library is used underneath, the `data` needs to be provided
+ + as a built-in array - this is done by allocating an array copying the input
+ + into it chunk by chunk. This chunk size is controlled by `policy.maxInputChunkSize`.
+ + The greater the chunk the better compression and less reallocations of the
+ + output array. In particular, if `data` has `length` property and
+ + `policy.maxInputChunkSize >= data.length`, the output size can be estimated
+ + and data will be compressed at once - with only one allocation for the input
+ + chunk array and one for the output.
+ +
+ + Params:
+ + data = Bytes to be compressed.
+ + policy = A policy defining different aspects of the compression process.
+ +
+ + Returns: Compressed data.
+ +
+ + Throws: `ZlibException` if any error occurs.
  +/
 void[] compress(InR)(InR data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 if (!isArray!InR && isCompressInput!InR)
@@ -1182,7 +1202,7 @@ if (!isArray!InR && isCompressInput!InR)
                 import std.algorithm.mutation : copy;
                 copy(data, input);
                 comp.input = input;
-                return comp.flush();
+                return cast(void[]) comp.flush();
             }
         }
         void[] output;
@@ -1202,7 +1222,7 @@ if (!isArray!InR && isCompressInput!InR)
 }
 
 /++
- + One-shot compression of an input range of data.
+ + One-shot compression of a `ubyte`-input range of data.
  +/
 unittest
 {
@@ -1217,6 +1237,55 @@ unittest
         @property bool empty() { return s.length == 0; }
     }
     auto range = InputRange(cast(ubyte[]) data);
+    auto output = compress(range);
+
+    // TODO assert correctness
+}
+
+/++
+ + One-shot compression of a `ubyte`-input range with length which is optimized.
+ +/
+unittest
+{
+    debug(zlib) writeln("compress(InputRange)");
+    const(void)[] data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+
+    struct InputRange
+    {
+        const(ubyte)[] s;
+        @property ubyte front() { return s[0]; }
+        @property void popFront() { s = s[1 .. $]; }
+        @property bool empty() { return s.length == 0; }
+        @property size_t length() { return s.length; }
+    }
+    auto range = InputRange(cast(ubyte[]) data);
+    auto policy = CompressionPolicy.defaultPolicy;
+    // Provide enough room to copy data to.
+    policy.maxInputChunkSize = 1024 ^^ 3;
+    auto output = compress(range, policy);
+
+    // Inptu won't fit entirely into a chunk, no one-call-compress optimization possible.
+    policy.maxInputChunkSize = 4;
+    auto output2 = compress(range, policy);
+    // TODO assert correctness
+}
+
+/++
+ + One-shot compression of an array-input range of data.
+ +/
+unittest
+{
+    debug(zlib) writeln("compress(InputRange)");
+    auto data = ["Lorem ipsum", " dolor sit amet,", " consectetur", " adipiscing elit. "];
+
+    struct InputRange
+    {
+        const(string)[] s;
+        @property const(void)[] front() { return s[0]; }
+        @property void popFront() { s = s[1 .. $]; }
+        @property bool empty() { return s.length == 0; }
+    }
+    auto range = InputRange(data);
     auto output = compress(range);
 
     // TODO assert correctness
@@ -1243,7 +1312,7 @@ if (isCompressOutput!OutR)
     {
         debug(zlib) writeln("isArray!OutR");
 
-        if (policy.buffer.isNull)
+        if (policy.buffer.isNull && output.length > 0)
         {
             // The output will be directly reallocated this way.
             policy.buffer = output;
@@ -1274,7 +1343,7 @@ if (isCompressOutput!OutR)
 }
 
 /++
- + One-shot compression of an array of data to an output range.
+ + One-shot compression of an array of data to the provided output.
  +/
 unittest
 {
@@ -1290,6 +1359,10 @@ unittest
     OutputRange output;
     compress(data, output);
     assert(output.buf == compress(data));
+
+    void[] outputBuff;
+    compress(data, outputBuff);
+    assert(outputBuff == output.buf);
     // TODO assert correctness
 }
 
@@ -1334,7 +1407,7 @@ if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
 }
 
 /++
- + One-shot compression of an input range of data to an output range.
+ + One-shot compression of an input range of data to an output.
  +/
 unittest
 {
@@ -1360,6 +1433,11 @@ unittest
     OutputRange output;
     compress(range, output);
     assert(output.buf == compress(data));
+
+    auto range2 = InputRange(cast(ubyte[]) data);
+    auto outputBuff = new ubyte[10];
+    compress(range2, outputBuff);
+    assert(outputBuff == output.buf);
     // TODO assert correctness
 }
 
@@ -1397,9 +1475,9 @@ if (isCompressOutput!OutR)
     import std.traits : isArray;
     static if (isArray!OutR)
     {
-        output ~= comp.compress(data);
+        output ~= cast(OutR) comp.compress(data);
         while (!comp.inputProcessed)
-            output ~= comp.compressPending();
+            output ~= cast(OutR) comp.compressPending();
     }
     else
     {
@@ -1418,7 +1496,7 @@ if (isCompressOutput!OutR)
         import std.traits : isArray;
         static if (isArray!OutR)
         {
-            output ~= comp.flush();
+            output ~= cast(OutR) comp.flush();
         }
         else
         {
