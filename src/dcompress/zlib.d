@@ -1229,14 +1229,8 @@ unittest
     debug(zlib) writeln("compress(InputRange)");
     const(void)[] data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
-    struct InputRange
-    {
-        const(ubyte)[] s;
-        @property ubyte front() { return s[0]; }
-        @property void popFront() { s = s[1 .. $]; }
-        @property bool empty() { return s.length == 0; }
-    }
-    auto range = InputRange(cast(ubyte[]) data);
+    import dcompress.test : inputRange;
+    auto range = inputRange(cast(ubyte[]) data);
     auto output = compress(range);
 
     // TODO assert correctness
@@ -1250,15 +1244,8 @@ unittest
     debug(zlib) writeln("compress(InputRange)");
     const(void)[] data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
-    struct InputRange
-    {
-        const(ubyte)[] s;
-        @property ubyte front() { return s[0]; }
-        @property void popFront() { s = s[1 .. $]; }
-        @property bool empty() { return s.length == 0; }
-        @property size_t length() { return s.length; }
-    }
-    auto range = InputRange(cast(ubyte[]) data);
+    import dcompress.test : inputRange;
+    auto range = inputRange!"withLength"(cast(ubyte[]) data);
     auto policy = CompressionPolicy.defaultPolicy;
     // Provide enough room to copy data to.
     policy.maxInputChunkSize = 1024 ^^ 3;
@@ -1278,14 +1265,8 @@ unittest
     debug(zlib) writeln("compress(InputRange)");
     auto data = ["Lorem ipsum", " dolor sit amet,", " consectetur", " adipiscing elit. "];
 
-    struct InputRange
-    {
-        const(string)[] s;
-        @property const(void)[] front() { return s[0]; }
-        @property void popFront() { s = s[1 .. $]; }
-        @property bool empty() { return s.length == 0; }
-    }
-    auto range = InputRange(data);
+    import dcompress.test : inputRange;
+    auto range = inputRange(data);
     auto output = compress(range);
 
     // TODO assert correctness
@@ -1350,19 +1331,14 @@ unittest
     debug(zlib) writeln("compress(void[], OutputRange)");
     const(void)[] data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
-    struct OutputRange
-    {
-        ubyte[] buf;
-        @property void put(ubyte b) { buf ~= b; }
-    }
-
-    OutputRange output;
+    import dcompress.test : OutputRange;
+    OutputRange!ubyte output;
     compress(data, output);
-    assert(output.buf == compress(data));
+    assert(output.buffer == compress(data));
 
     void[] outputBuff;
     compress(data, outputBuff);
-    assert(outputBuff == output.buf);
+    assert(outputBuff == output.buffer);
     // TODO assert correctness
 }
 
@@ -1395,6 +1371,9 @@ if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
             }
         }
         auto comp = Compressor.create(policy);
+        // Array may have some space allocated.
+        static if (isArray!OutR)
+            output.length = 0;
         comp.compressAllByCopyChunk(data, output);
     }
     else // isArray!(ElementType!InR)
@@ -1414,30 +1393,23 @@ unittest
     debug(zlib) writeln("compress(InputRange)");
     const(void)[] data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
-    struct InputRange
-    {
-        const(ubyte)[] s;
-        @property ubyte front() { return s[0]; }
-        @property void popFront() { s = s[1 .. $]; }
-        @property bool empty() { return s.length == 0; }
-        @property size_t length() { return s.length; }
-    }
+    import dcompress.test : inputRange, OutputRange;
+    auto range = inputRange!"withLength"(cast(const(ubyte)[]) data);
 
-    struct OutputRange
-    {
-        ubyte[] buf;
-        @property void put(ubyte b) { buf ~= b; }
-    }
-
-    auto range = InputRange(cast(ubyte[]) data);
-    OutputRange output;
+    OutputRange!ubyte output;
     compress(range, output);
-    assert(output.buf == compress(data));
+    assert(output.buffer == compress(data));
 
-    auto range2 = InputRange(cast(ubyte[]) data);
+    auto range2 = inputRange!"withLength"(cast(ubyte[]) data);
     auto outputBuff = new ubyte[10];
     compress(range2, outputBuff);
-    assert(outputBuff == output.buf);
+    assert(outputBuff == output.buffer);
+
+    // Input range without length.
+    auto range3 = inputRange(cast(ubyte[]) data);
+    auto outputBuff2 = new ubyte[10];
+    compress(range3, outputBuff2);
+    writeln(outputBuff2);
     // TODO assert correctness
 }
 
