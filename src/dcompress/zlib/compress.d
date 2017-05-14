@@ -1,10 +1,4 @@
-/++
- + Provides compressing and decompressing abstractions built on top of
- + the $(LINK2 http://www.zlib.net, zlib library).
- +
- + Authors: Jakub Łabaj, uaaabbjjkl@gmail.com
- +/
-module dcompress.zlib;
+module dcompress.zlib.compress;
 
 debug = zlib;
 debug(zlib)
@@ -13,60 +7,7 @@ debug(zlib)
 }
 
 import c_zlib = etc.c.zlib;
-
-/++
- + Status codes returned by zlib library.
- +/
-private enum ZlibStatus
-{
-    ok = c_zlib.Z_OK,
-    streamEnd = c_zlib.Z_STREAM_END,
-    needDict = c_zlib.Z_NEED_DICT,
-    errno = c_zlib.Z_ERRNO,
-    streamError = c_zlib.Z_STREAM_ERROR,
-    dataError = c_zlib.Z_DATA_ERROR,
-    memoryError = c_zlib.Z_MEM_ERROR,
-    bufferError = c_zlib.Z_BUF_ERROR,
-    libVersionError = c_zlib.Z_VERSION_ERROR,
-}
-
-private string getErrorMessage(int status)
-in
-{
-    // These are not errors.
-    assert(status != ZlibStatus.ok);
-    assert(status != ZlibStatus.streamEnd);
-    assert(status != ZlibStatus.needDict);
-}
-body
-{
-     switch(status)
-     {
-        case ZlibStatus.bufferError:
-            return "Buffer error";
-        case ZlibStatus.streamError:
-            return "Stream error";
-        case ZlibStatus.dataError:
-            return "Data error";
-        case ZlibStatus.libVersionError:
-            return "Incompatible zlib library version";
-        case ZlibStatus.errno:
-            return "Error outside the zlib library";
-        default:
-            return "Unknown error";
-     }
-}
-
-/++
- + Exceptions thrown by this module on error.
- +/
-class ZlibException : Exception
-{
-    this(int status)
-    {
-        super(getErrorMessage(status));
-    }
-}
+public import dcompress.zlib.common;
 
 /++
  + Compression methods supported by zlib library.
@@ -110,61 +51,7 @@ enum CompressionStrategy
 }
 
 /++
- + Supported headers for the compressed data.
- +
- + The library supports only one compression method called `deflate`, which may
- + be wrapped around with `zlib` or `gzip` headers, including integrity check
- + values.
- +
- + The `zlib` format was designed to be compact and fast, for use in memory and
- + on communications channels, makes use of `Adler-32` for integrity check.
- + The `gzip` format was designed for a single file compression on file systems,
- + has a larger header than `zlib` to maintain file information, and uses
- + a slower `CRC-32` check method.
- +/
-enum DataHeader
-{
-    /// zlib wrapper around a deflate stream. See the specification
-    /// $(LINK2 https://tools.ietf.org/html/rfc1950, RFC 1950).
-    zlib,
-    /// Raw deflate stream, without any header or check value. See the
-    /// specification $(LINK2 https://tools.ietf.org/html/rfc1951, RFC 1951).
-    rawDeflate,
-    /// gzip wrapper around a deflate stream. See the specification
-    /// $(LINK2 https://tools.ietf.org/html/rfc1952, RFC 1952).
-    gzip,
-    /// Automatic header detection - only for decompressing.
-    automatic
-}
-
-/++
- + Returns window size value depending on the header. Used to initialize
- + a zlib stream:
- + * default = 15
- + * 9..15 - base 2 log of the window size
- + * -9..-15 - raw deflate, without zlib header or trailer and no crc
- + * 25..31 = 16 + (9..15) - low 4 bits of the value is the window size log,
- +                           while including a basic gzip header and checksum
- + * 41..47 = 32 + (9..15) - automatic header detection in decompressed data
- +/
-private int getWindowBitsValue(int windowBits, DataHeader header)
-in
-{
-    assert(9 <= windowBits && windowBits <= 15);
-}
-body
-{
-    final switch (header)
-    {
-        case DataHeader.zlib: return windowBits;
-        case DataHeader.rawDeflate: return -windowBits;
-        case DataHeader.gzip: return 16 + windowBits;
-        case DataHeader.automatic: return 32 + windowBits;
-    }
-}
-
-/++
- + Settings allowing to adjust the compression process.
+ + Keeps settings allowing to adjust the compression process.
  +/
 struct CompressionPolicy
 {
@@ -434,7 +321,7 @@ public:
      + to fit the whole compressed data at once, whereas other functions usually
      + allocate buffer with size equal to `defaultBufferSize`.
      +
-     + If `newBuffer` is not in `null` state, then the underlying array should
+     + If `newBuffer` is not in `null` state, then the underlying array must
      + not be empty.
      +
      + Params:
@@ -543,7 +430,7 @@ public:
      + Creates a compressor with the given settings.
      +
      + If `policy.buffer.isNull`, it will be allocated with size equal to
-     + `CompressionPolicy.defaultBufferSize`.
+     + `policy.defaultBufferSize`.
      +
      + Params:
      + policy = A policy defining different aspects of the compression process.
@@ -1477,3 +1364,4 @@ if (isCompressOutput!OutR)
         }
     } while (comp.outputPending);
 }
+

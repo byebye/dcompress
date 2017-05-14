@@ -3,7 +3,7 @@ import std.stdio;
 //import dcompress.lzma;
 //import dcompress.bz2;
 //import dcompress.file;
-import d_zlib = dcompress.zlib;
+import dcompress.zlib;
 
 import std_zlib = std.zlib;
 import std.algorithm : map, joiner;
@@ -39,9 +39,9 @@ void main() {
     immutable data = ["aaa", "bbb", "ccc", "dafasdfadfaf", "dfadfa", "adfaf" ];
     immutable dataJoined = data.dup.joiner.array;
     {
-        auto policy = d_zlib.CompressionPolicy.defaultPolicy();
+        auto policy = CompressionPolicy.defaultPolicy();
         policy.buffer = new ubyte[2];
-        auto comp = d_zlib.Compressor.create(policy);
+        auto comp = Compressor.create(policy);
         ubyte[] output;
         foreach (chunk; data)
         {
@@ -57,7 +57,7 @@ void main() {
         writeln(output);
     }
     {
-        auto c2 = d_zlib.Compressor.create();
+        auto c2 = Compressor.create();
         auto o = cast(ubyte[]) c2.compress(dataJoined).dup;
         o ~= cast(ubyte[]) c2.flush();
         writeln(o);
@@ -70,17 +70,16 @@ void main() {
             @property void popFront() { s = s[1 .. $]; }
             @property bool empty() { return s.length == 0; }
         }
-        writeln(d_zlib.compress(data[]));
-        writeln(d_zlib.compress!(typeof(data[]))(data[]));
-        writeln((d_zlib.compress(R(data))));
-        writeln(d_zlib.compress(dataJoined));
+        writeln(compress(data[]));
+        writeln((compress(R(data))));
+        writeln(compress(dataJoined));
     }
     {
         writeln(std_zlib.compress(data));
     }
     {
         auto comp = new std_zlib.Compress;
-        ubyte[] output = data.map!(chunk => cast(ubyte[])comp.compress(chunk.dup)).join;
+        ubyte[] output = data.map!(chunk => cast(ubyte[]) comp.compress(chunk.dup)).join;
         output ~= cast(ubyte[]) comp.flush();
         writeln(output);
     }
