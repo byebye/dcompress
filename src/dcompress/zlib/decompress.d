@@ -17,7 +17,7 @@ struct DecompressionPolicy
 private:
     import std.typecons : Nullable;
 
-    DataHeader _header = DataHeader.zlib;
+    DataHeader _header = DataHeader.automatic;
     int _windowBits = 15;
     Nullable!(void[]) _buffer;
     size_t _defaultBufferSize = 1024;
@@ -31,7 +31,7 @@ public:
      +
      + Default settings:
      + $(OL
-     +     $(LI `header = DataHeader.zlib`)
+     +     $(LI `header = DataHeader.automatic`)
      +     $(LI `windowBits = 15`)
      +     $(LI `buffer.isEmpty == true`)
      +     $(LI `defaultBufferSize = 1024`)
@@ -635,4 +635,369 @@ public:
         immutable writtenBytes = buffer.length - _zlibStream.avail_out;
         return buffer[0 .. writtenBytes];
     }
+}
+
+/++
+ + Decompresses all the bytes from the array at once using the given compression policy.
+ +
+ + Params:
+ + data = Array of bytes to be decompressed.
+ + policy = A policy defining different aspects of the decompression process.
+ +
+ + Returns: Decompressed data.
+ +
+ + Throws: `ZlibException` if any error occurs.
+ +/
+void[] decompress(const(void)[] data, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+{
+    debug(zlib) writeln("decompress(void[])");
+
+    auto decomp = Decompressor.create(policy);
+    decomp.input = data;
+    void[] output;
+    output.reserve(data.length);
+    decomp.flushAll(output);
+    return output;
+}
+
+/++
+ + One-shot decompression of an array of data.
+ +/
+unittest
+{
+    debug(zlib) writeln("decompress(void[])");
+
+    auto uncompressed = "Lorem ipsum dolor sit amet";
+    ubyte[] compressed = [
+        120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
+        207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
+
+    auto output = cast(string) decompress(compressed);
+    assert(output == uncompressed);
+}
+
+import dcompress.primitives : isCompressInput, isCompressOutput;
+import std.traits : isArray;
+
+/++
+ + Decompresses all the bytes from the input range at once using the given compression policy.
+ +
+ + Because the zlib library is used underneath, the `data` needs to be provided
+ + as a built-in array - this is done by allocating an array and copying the input
+ + into it chunk by chunk. This chunk size is controlled by `policy.maxInputChunkSize`.
+ + The greater the chunk the decompression may be faster and reduce zlib memory
+ + usage. In particular, the best effect can be achieved when
+ + `policy.maxInputChunkSize` is equal or greater than number of bytes in `data`,
+ + which means that entire input can be provided to the zlib library at once.
+ +
+ + Params:
+ + data = Input range of bytes to be compressed.
+ + policy = A policy defining different aspects of the decompression process.
+ +
+ + Returns: Decompressed data.
+ +
+ + Throws: `ZlibException` if any error occurs.
+ +/
+void[] decompress(InR)(InR data, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+if (!isArray!InR && isCompressInput!InR)
+{
+    debug(zlib) writeln("decompress(InputRange)");
+
+    void[] output;
+    decompress(data, output, policy);
+    return output;
+}
+
+/++
+ + One-shot decompression of a `ubyte`-input range of data.
+ +/
+unittest
+{
+    debug(zlib) writeln("decompress(InputRange!ubyte) -- no length");
+
+    auto uncompressed = "Lorem ipsum dolor sit amet";
+    ubyte[] compressed = [
+        120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
+        207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
+
+    import dcompress.test : inputRange;
+    auto range = inputRange(compressed);
+    auto output = cast(string) decompress(range);
+    assert(output == uncompressed);
+}
+
+/++
+ + One-shot decompression of a `ubyte`-input range with length which is optimized
+ + when `policy.maxInputChunkSize >= data.length`.
+ +/
+unittest
+{
+    debug(zlib) writeln("decompress(InputRange!ubyte) -- with length");
+
+    auto uncompressed = "Lorem ipsum dolor sit amet";
+    ubyte[] compressed = [
+        120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
+        207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
+
+    DecompressionPolicy policy = DecompressionPolicy.defaultPolicy;
+
+    import dcompress.test : inputRange;
+    // Optimized.
+    policy.maxInputChunkSize = compressed.length * 2;
+
+    auto optRange = inputRange!"withLength"(compressed);
+    auto optOutput = cast(string) decompress(optRange, policy);
+    assert(optOutput == uncompressed);
+
+    // Not optimized.
+    policy.maxInputChunkSize = compressed.length / 2;
+
+    auto range = inputRange!"withLength"(compressed);
+    auto output = cast(string) decompress(range, policy);
+    assert(output == uncompressed);
+}
+
+/++
+ + One-shot decompression of an array-input range of data.
+ +/
+unittest
+{
+    debug(zlib) writeln("decompress(InputRange!(ubyte[])");
+
+    auto uncompressed = "Lorem ipsum dolor sit amet";
+    ubyte[][] compressed = [
+        [120, 156, 243, 201, 47], [74], [205, 85, 200, 44, 40, 46],
+        [205, 85, 72, 201, 207, 201, 47], [82, 40, 206, 44, 81, 72, 204, 77],
+        [45, 1, 0, 131, 213, 9, 197]];
+
+    import dcompress.test : inputRange;
+    auto range = inputRange(compressed);
+    auto output = cast(string) decompress(range);
+    assert(output == uncompressed);
+}
+
+/++
+ + Decompresses all the bytes from the array using the given decompression policy
+ + and outputs the decompressed data directly to the provided output range.
+ +
+ + If `output` is an array, the compressed data will replace its content - instead
+ + of being appended.
+ +
+ + Params:
+ + data = Array of bytes to be decompressed.
+ + output = Output range taking the compressed bytes.
+ + policy = A policy defining different aspects of the compression process.
+ +
+ + Throws: `ZlibException` if any error occurs.
+ +/
+void decompress(OutR)(const(void)[] data, ref OutR output, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+if (isCompressOutput!OutR)
+{
+    debug(zlib) writeln("decompress(void[], OutputRange)");
+
+    auto decomp = Decompressor.create(policy);
+    decomp.input = data;
+
+    import std.traits : isArray;
+    static if (isArray!OutR)
+    {
+        output.reserve(data.length);
+        output.length = 0;
+    }
+    decomp.flushAll(output);
+}
+
+/++
+ + One-shot decompression of an array of data to the provided output.
+ +/
+unittest
+{
+    debug(zlib) writeln("decompress(void[], OutputRange)");
+
+    auto uncompressed = "Lorem ipsum dolor sit amet";
+    ubyte[] compressed = [
+        120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
+        207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
+
+    import dcompress.test : OutputRange;
+
+    OutputRange!ubyte output;
+    decompress(compressed, output);
+    assert(output.buffer == cast(void[]) uncompressed);
+}
+
+/++
+ + Decompresses all the bytes from the input range using the given decompression
+ + policy and outputs the decompressed data directly to the provided output range.
+ +
+ + If `output` is an array, the compressed data will replace its content - instead
+ + of being appended.
+ +
+ + Because the zlib library is used underneath, the `data` needs to be provided
+ + as a built-in array - this is done by allocating an array and copying the input
+ + into it chunk by chunk. This chunk size is controlled by `policy.maxInputChunkSize`.
+ + The greater the chunk the decompression may be faster and reduce zlib memory
+ + usage. In particular, the best effect can be achieved when
+ + `policy.maxInputChunkSize` is equal or greater than number of bytes in `data`,
+ + which means that entire input can be provided to the zlib library at once.
+ +
+ + Params:
+ + data = Input range of bytes to be decompressed.
+ + output = Output range taking the compressed bytes.
+ + policy = A policy defining different aspects of the compression process.
+ +
+ + Throws: `ZlibException` if any error occurs.
+ +/
+void decompress(InR, OutR)(InR data, ref OutR output, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
+{
+    debug(zlib) writeln("decompress!(InputRange, OutputRange)");
+
+    import std.range.primitives : ElementType;
+    import std.traits : Unqual;
+    static if (is(Unqual!(ElementType!InR) == ubyte))
+    {
+        debug(zlib) writeln("ElementType!InR == ubyte");
+
+        import std.range.primitives : hasLength;
+        static if (hasLength!InR)
+        {
+            if (policy.maxInputChunkSize >= data.length)
+            {
+                debug(zlib) writeln("hasLength!InR && policy.maxInputChunkSize >= data.length");
+
+                auto input = new ubyte[data.length];
+                import std.algorithm.mutation : copy;
+                copy(data, input);
+                decompress(input, output, policy);
+                return;
+            }
+        }
+
+        auto decomp = Decompressor.create(policy);
+        decomp.decompressAllByCopyChunk(data, output);
+    }
+    else // isArray!(ElementType!InR)
+    {
+        debug(zlib) writeln("isArray!(ElementType!InR)");
+
+        auto decomp = Decompressor.create(policy);
+        decomp.decompressAllByChunk(data, output);
+    }
+}
+
+/++
+ + One-shot compression of an input range of data to an output.
+ +/
+unittest
+{
+    debug(zlib) writeln("decompress(InputRange, OutputRange)");
+
+    auto uncompressed = "Lorem ipsum dolor sit amet";
+    ubyte[] compressed = [
+        120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
+        207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
+
+    import dcompress.test : inputRange, OutputRange;
+
+    auto range = inputRange(compressed);
+    OutputRange!ubyte output;
+    decompress(range, output);
+    assert(output.buffer == cast(void[]) uncompressed);
+}
+
+/++
+ + One-shot compression of an input range of data to an array.
+ +/
+unittest
+{
+    debug(zlib) writeln("decompress(InputRange, array) -- ");
+
+    auto uncompressed = "Lorem ipsum dolor sit amet";
+    ubyte[] compressed = [
+        120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
+        207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
+
+    import dcompress.test : inputRange;
+
+    auto range = inputRange!"withLength"(compressed);
+    void[] output;
+    decompress(range, output);
+    assert(cast(string) output == uncompressed);
+}
+
+private void decompressAllByChunk(InR, OutR)(ref Decompressor decomp, ref InR data, ref OutR output)
+{
+    foreach (chunk; data)
+    {
+        decomp.decompressAll(chunk, output);
+    }
+    decomp.flushAll(output);
+}
+
+private void decompressAllByCopyChunk(InR, OutR)(ref Decompressor decomp, ref InR data, ref OutR output)
+{
+    // TODO On-stack allocation for chunk - argument switch?
+    import std.range.primitives : hasLength;
+    static if (hasLength!InR)
+    {
+        import std.algorithm.comparison : min;
+        immutable chunkSize = min(data.length, decomp.policy.maxInputChunkSize);
+    }
+    else
+        immutable chunkSize = decomp.policy.maxInputChunkSize;
+    // TODO optimize when all the data fits in chunk.
+    ubyte[] chunk = new ubyte[chunkSize];
+    while (!data.empty)
+    {
+        foreach (i; 0 .. chunkSize)
+        {
+            chunk[i] = data.front;
+            data.popFront();
+            if (data.empty)
+            {
+                chunk.length = i + 1;
+                break;
+            }
+        }
+        decomp.decompressAll(chunk, output);
+    }
+    decomp.flushAll(output);
+}
+
+private void decompressAll(OutR)(ref Decompressor decomp, const(void)[] data, ref OutR output)
+if (isCompressOutput!OutR)
+{
+    import std.traits : isArray;
+    static if (isArray!OutR)
+    {
+        output ~= cast(OutR) decomp.decompress(data);
+        while (!decomp.inputProcessed)
+            output ~= cast(OutR) decomp.decompressPending();
+    }
+    else
+    {
+        import std.range.primitives : put;
+        put(output, cast(const(ubyte)[]) decomp.decompress(data));
+        while (!decomp.inputProcessed)
+            put(output, cast(const(ubyte)[]) decomp.decompressPending());
+    }
+}
+
+private void flushAll(OutR)(ref Decompressor decomp, ref OutR output)
+if (isCompressOutput!OutR)
+{
+    do
+    {
+        import std.traits : isArray;
+        static if (isArray!OutR)
+        {
+            output ~= cast(OutR) decomp.flush();
+        }
+        else
+        {
+            import std.range.primitives : put;
+            put(output, cast(const(ubyte)[]) decomp.flush());
+        }
+    } while (decomp.outputPending);
 }
