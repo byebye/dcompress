@@ -248,32 +248,6 @@ private:
 
 public:
 
-    /++
-     + Modifies behavior of `Decompressor.flush`.
-     +/
-    enum FlushMode
-    {
-        /// Flushes as much output as possible to the output buffer.
-        sync = c_zlib.Z_SYNC_FLUSH,
-        /// Default mode. Used to correctly finish the decompression process i.e.
-        /// all pending input is processed and all pending output is flushed.
-        finish = c_zlib.Z_FINISH,
-        /// Stops when it gets to the next deflate block boundary. When decoding
-        /// the zlib or gzip format, this will cause to return immediately after
-        /// the header and before the first block. When decoding a raw compressed
-        /// stream, it will go ahead and process the first block and return when
-        /// it gets to the end of that block, or when it runs out of data.
-        block = c_zlib.Z_BLOCK,
-        /// Behaves as `FlushMode.block` does, but it also returns when the end
-        /// of each deflate block header is reached, before any actual data in
-        /// that block is decoded.
-        // trees = c_zlib.Z_TREES,
-        /// No flushing mode, allows decide how much data to accumulate before
-        /// producing output, in order to maximize decompression. `flush` called
-        /// with this mode is equivalent to `decompressPending`.
-        noFlush = c_zlib.Z_NO_FLUSH,
-    }
-
     @disable this();
 
     private this(DecompressionPolicy policy)
@@ -483,7 +457,7 @@ public:
 
     /++
      + Setting the input may be used to force one-shot decompression using `flush`,
-     + although for this kind decompression `decompress` functions are implemented.
+     + although for this kind of decompression `decompress` functions are implemented.
      +/
     unittest
     {
@@ -519,9 +493,7 @@ public:
      +
      + Returns: Slice of the internal buffer with the decompressed data.
      +
-     + Throws: `ZlibException` if the zlib library returns error. It may happen
-     +          especially when `decompress` is being called after `flush`
-     +          while `outputPending == true`.
+     + Throws: `ZlibException` if the zlib library returns error.
      +/
     const(void)[] decompress(const(void)[] data)
     in
@@ -550,6 +522,18 @@ public:
     }
 
     /++
+     + Modifies behavior of inflating compressed data.
+     +/
+    private enum FlushMode
+    {
+        /// Default mode. Used to correctly finish the decompression process i.e.
+        /// all pending input is processed and all pending output is flushed.
+        finish = c_zlib.Z_FINISH,
+        /// No flushing mode, just decompression.
+        noFlush = c_zlib.Z_NO_FLUSH,
+    }
+
+    /++
      + Retrieves the remaining decompressed data that didn't fit into the internal
      + buffer during call to `decompress` and continues to decompress the input.
      +
@@ -558,9 +542,7 @@ public:
      +
      + Returns: Slice of the internal buffer with the compressed data.
      +
-     + Throws: `ZlibException` if the zlib library returns error. It may happen
-     +          especially when `decompressPending` is being called after `flush`
-     +          while `outputPending == true`.
+     + Throws: `ZlibException` if the zlib library returns error.
      +/
     const(void)[] decompressPending()
     {
@@ -622,32 +604,6 @@ public:
         //assert(output.length > 2);
     }
 
-    /++
-     + Flush should be repeated with same mode until `outputPending == false`.
-     +/
-    unittest
-    {
-        debug(zlib) writeln("Decompressor.flush -- flush mode changed");
-        //auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
-        //
-        //auto policy = DecompressionPolicy.defaultPolicy;
-        //// Very small buffer just for testing purposes.
-        //policy.buffer = new ubyte[2];
-        //auto decomp = Decompressor.create(policy);
-        //
-        //auto output = decomp.decompress(data);
-        //assert(output.length == 2);
-        //output ~= decomp.flush();
-        //// Repeat with default mode.
-        //output ~= decomp.flush(FlushMode.finish);
-        //assert(output.length == 6);
-        //
-        //import std.exception : assertThrown;
-        //// Exception thrown - mode changed while output is pending.
-        //assert(decomp.outputPending);
-        //assertThrown!ZlibException(decomp.flush(FlushMode.full));
-    }
-
     private const(void)[] decompress(FlushMode mode)
     {
         _zlibStream.next_out = cast(ubyte*) buffer.ptr;
@@ -655,29 +611,25 @@ public:
 
         auto status = c_zlib.inflate(&_zlibStream, mode);
 
-        if (status == ZlibStatus.ok)
+        if (status == ZlibStatus.streamEnd)
         {
-            if (mode == FlushMode.finish)
-                _outputPending = true;
-            else
-                _outputPending = (_zlibStream.avail_out == 0);
+            _outputPending = false;
+            status = c_zlib.inflateReset(&_zlibStream);
+            assert(status == ZlibStatus.ok);
         }
-        else
+        else if (status == ZlibStatus.ok)
         {
-            // TODO Think whether output buffer can be corrupted.
-            assert(status != ZlibStatus.bufferError);
-
-            if (status == ZlibStatus.streamEnd)
-            {
-                _outputPending = false;
-                status = c_zlib.deflateReset(&_zlibStream);
-                assert(status == ZlibStatus.ok);
-            }
-            else
-            {
-                // TODO Consider calling deflateEnd
-                throw new ZlibException(status);
-            }
+            _outputPending = (_zlibStream.avail_out == 0);
+        }
+        else if (status == ZlibStatus.dataError)
+        {
+            // TODO Consider calling inflateEnd or inflateSync
+            throw new ZlibException(status, _zlibStream.msg);
+        }
+        else if (status != ZlibStatus.bufferError) // Not a fatal error
+        {
+            // TODO Consider calling inflateEnd
+            throw new ZlibException(status);
         }
 
         immutable writtenBytes = buffer.length - _zlibStream.avail_out;

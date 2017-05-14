@@ -54,6 +54,12 @@ class ZlibException : Exception
     {
         super(getErrorMessage(status));
     }
+
+    this(int status, const(char)* cause)
+    {
+        import std.conv : to;
+        super(getErrorMessage(status) ~ ": " ~ to!string(cause));
+    }
 }
 
 /++
