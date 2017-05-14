@@ -1011,10 +1011,10 @@ private size_t getCompressedSizeBound(ref Compressor comp, size_t inputLength)
 }
 
 /++
- + Compresses all the bytes at once using the given compression policy.
+ + Compresses all the bytes from the array at once using the given compression policy.
  +
  + Params:
- + data = Bytes to be compressed.
+ + data = Array of bytes to be compressed.
  + policy = A policy defining different aspects of the compression process.
  +
  + Returns: Compressed data.
@@ -1046,10 +1046,10 @@ import dcompress.primitives : isCompressInput, isCompressOutput;
 import std.traits : isArray;
 
 /++
- + Compresses all the bytes at once using the given compression policy.
+ + Compresses all the bytes from the input range at once using the given compression policy.
  +
  + Because the zlib library is used underneath, the `data` needs to be provided
- + as a built-in array - this is done by allocating an array copying the input
+ + as a built-in array - this is done by allocating an array and copying the input
  + into it chunk by chunk. This chunk size is controlled by `policy.maxInputChunkSize`.
  + The greater the chunk the better compression and less reallocations of the
  + output array. In particular, if `data` has `length` property and
@@ -1058,7 +1058,7 @@ import std.traits : isArray;
  + chunk array and one for the output.
  +
  + Params:
- + data = Bytes to be compressed.
+ + data = Input range of bytes to be compressed.
  + policy = A policy defining different aspects of the compression process.
  +
  + Returns: Compressed data.
@@ -1160,7 +1160,10 @@ unittest
 
 /++
  + Compresses all the bytes using the given compression policy and outputs
- + the compressed data directly to `output`.
+ + the compressed data directly to the provided output range.
+ +
+ + If `output` is an array, the compressed data will replace its content - instead
+ + of being appended.
  +
  + Params:
  + data = Bytes to be compressed.
@@ -1179,8 +1182,10 @@ if (isCompressOutput!OutR)
     {
         debug(zlib) writeln("isArray!OutR");
 
-        if (policy.buffer.isNull && output.length > 0)
+        if (policy.buffer.isNull)
         {
+            // In case the output.length == 0, because cannot be assigned in such case
+            output.length = 1;
             // The output will be directly reallocated this way.
             policy.buffer = output;
         }
@@ -1276,7 +1281,7 @@ if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
  +/
 unittest
 {
-    debug(zlib) writeln("compress(InputRange)");
+    debug(zlib) writeln("compress(InputRange, OutputRange)");
     const(void)[] data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
     import dcompress.test : inputRange, OutputRange;
@@ -1311,7 +1316,15 @@ private void compressAllByChunk(InR, OutR)(ref Compressor comp, ref InR data, re
 private void compressAllByCopyChunk(InR, OutR)(ref Compressor comp, ref InR data, ref OutR output)
 {
     // TODO On-stack allocation for chunk - argument switch?
-    immutable chunkSize = comp.policy.maxInputChunkSize;
+    import std.range.primitives : hasLength;
+    static if (hasLength!InR)
+    {
+        import std.algorithm.comparison : min;
+        immutable chunkSize = min(data.length, comp.policy.maxInputChunkSize);
+    }
+    else
+        immutable chunkSize = comp.policy.maxInputChunkSize;
+
     ubyte[] chunk = new ubyte[chunkSize];
     while (!data.empty)
     {
@@ -1320,7 +1333,10 @@ private void compressAllByCopyChunk(InR, OutR)(ref Compressor comp, ref InR data
             chunk[i] = data.front;
             data.popFront();
             if (data.empty)
+            {
+                chunk.length = i + 1;
                 break;
+            }
         }
         comp.compressAll(chunk, output);
     }
