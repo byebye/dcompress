@@ -462,7 +462,6 @@ public:
         debug(zlib) writeln("Compressor.create -- default policy");
         auto comp = Compressor.create();
         auto policy = CompressionPolicy.defaultPolicy;
-        // The buffer is being overriden in the policy stored by the Compressor.
         assert(policy.buffer.isNull);
         assert(comp.buffer.length == policy.defaultBufferSize);
     }
@@ -780,7 +779,7 @@ public:
 
     /++
      + Setting the input may be used to force one-shot compression using `flush`,
-     + although for this kind compression `compress` function are implemented.
+     + although for this kind compression `compress` functions are implemented.
      +/
     unittest
     {
