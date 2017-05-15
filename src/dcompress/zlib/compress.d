@@ -375,7 +375,13 @@ private:
 
     c_zlib.z_stream _zlibStream;
     CompressionPolicy _policy;
-    bool _outputPending;
+    enum Status : ubyte
+    {
+        outputPending,
+        needsMoreInput,
+        finished
+    }
+    Status _status = Status.needsMoreInput;
 
 public:
 
@@ -617,7 +623,7 @@ public:
      +/
     @property bool outputPending() const
     {
-        return _outputPending;
+        return _status == Status.outputPending;
     }
 
     /++
@@ -780,6 +786,7 @@ public:
     {
         _zlibStream.next_in = cast(const(ubyte)*) data.ptr;
         _zlibStream.avail_in = cast(uint) data.length; // TODO check for overflow
+        _status = Status.outputPending;
     }
 
     /++
@@ -970,6 +977,10 @@ public:
 
     private const(void)[] compress(FlushMode mode)
     {
+        // Nothing to do here.
+        if (_status == Status.finished)
+            return buffer[0 .. 0];
+
         _zlibStream.next_out = cast(ubyte*) buffer.ptr;
         _zlibStream.avail_out = cast(uint) buffer.length;
 
@@ -984,29 +995,25 @@ public:
         //   has been produced (only when mode == FlushMode.finish)
         auto status = c_zlib.deflate(&_zlibStream, mode);
 
-        if (status == ZlibStatus.ok)
+        if (status == ZlibStatus.streamEnd)
         {
-            if (mode == FlushMode.finish)
-                _outputPending = true;
+            _status = Status.finished;
+            status = c_zlib.deflateReset(&_zlibStream);
+            assert(status == ZlibStatus.ok);
+        }
+        else if (status == ZlibStatus.ok)
+        {
+            if (_zlibStream.avail_out == 0 && bytesPending > 0)
+                _status = Status.outputPending;
             else
-                _outputPending = (_zlibStream.avail_out == 0 && bytesPending > 0);
+                _status = Status.needsMoreInput;
         }
         else
         {
-            // TODO Think whether output buffer can be corrupted.
             assert(status != ZlibStatus.bufferError);
 
-            if (status == ZlibStatus.streamEnd)
-            {
-                _outputPending = false;
-                status = c_zlib.deflateReset(&_zlibStream);
-                assert(status == ZlibStatus.ok);
-            }
-            else
-            {
-                // TODO Consider calling deflateEnd
-                throw new ZlibException(status);
-            }
+            // TODO Consider calling deflateEnd
+            throw new ZlibException(status);
         }
 
         immutable writtenBytes = buffer.length - _zlibStream.avail_out;
