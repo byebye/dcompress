@@ -245,6 +245,9 @@ public:
 
     private const(void)[] compress(Bz2Action action)
     {
+        if (_status == Status.idle)
+            return buffer[0 .. 0];
+
         _bzStream.next_out = cast(ubyte*) buffer.ptr;
         _bzStream.avail_out = cast(uint) buffer.length;
 
@@ -301,7 +304,6 @@ void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy
     void[] output;
     do
     {
-        writeln("flush");
         output ~= comp.flush();
     } while (comp.outputPending);
 
@@ -317,8 +319,8 @@ unittest
     auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
     auto output = compress(data);
-    //import dcompress.bz2 : decompress;
-    //assert(decompress(output) == data);
+    import dcompress.bz2 : decompress;
+    assert(decompress(output) == data);
 }
 
 import dcompress.primitives : isCompressInput, isCompressOutput;
@@ -365,8 +367,8 @@ unittest
     auto range = inputRange(cast(ubyte[]) data);
     auto output = compress(range);
 
-    //import dcompress.bz2 : decompress;
-    //assert(decompress(output) == data);
+    import dcompress.bz2 : decompress;
+    assert(decompress(output) == data);
 }
 
 /++
@@ -388,8 +390,8 @@ unittest
     policy.maxInputChunkSize = 4;
     auto output2 = compress(range, policy);
 
-    //import dcompress.bz2 : decompress;
-    //assert(decompress(output) == data);
+    import dcompress.bz2 : decompress;
+    assert(decompress(output) == data);
 }
 
 /++
@@ -404,9 +406,9 @@ unittest
     auto range = inputRange(data);
     auto output = compress(range);
 
-    //import dcompress.bz2 : decompress;
-    //import std.range : join;
-    //assert(decompress(output) == data.join);
+    import dcompress.bz2 : decompress;
+    import std.range : join;
+    assert(decompress(output) == data.join);
 }
 
 /++
@@ -451,8 +453,8 @@ unittest
     compress(data, output);
     assert(output.buffer == compress(data));
 
-    //import dcompress.bz2 : decompress;
-    //assert(decompress(output.buffer) == data);
+    import dcompress.bz2 : decompress;
+    assert(decompress(output.buffer) == data);
 
     void[] outputBuff;
     compress(data, outputBuff);
@@ -538,8 +540,8 @@ unittest
     compress(range, output);
     assert(output.buffer == compress(data));
 
-    //import dcompress.bz2 : decompress;
-    //assert(decompress(output.buffer) == data);
+    import dcompress.bz2 : decompress;
+    assert(decompress(output.buffer) == data);
 
     // Output to an array, which will be reallocated.
     auto range2 = inputRange!"withLength"(cast(ubyte[]) data);
