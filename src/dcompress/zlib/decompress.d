@@ -650,11 +650,7 @@ public:
         _zlibStream.next_out = cast(ubyte*) buffer.ptr;
         _zlibStream.avail_out = cast(uint) buffer.length;
 
-        writeln("before: ", mode, " ", buffer.length - _zlibStream.avail_out, " ", _zlibStream.avail_in);
         auto status = c_zlib.inflate(&_zlibStream, mode);
-
-        import std.conv : to;
-        writeln(to!ZlibStatus(status));
 
         if (status == ZlibStatus.streamEnd)
         {
@@ -662,16 +658,12 @@ public:
             status = c_zlib.inflateReset(&_zlibStream);
             assert(status == ZlibStatus.ok);
         }
-        else if (status == ZlibStatus.ok)
+        else if (status == ZlibStatus.ok || status == ZlibStatus.bufferError)
         {
             if (_zlibStream.avail_out == 0)
                 _status = Status.outputPending;
             else
                 _status = Status.needsMoreInput;
-        }
-        else if (status == ZlibStatus.bufferError)
-        {
-            _status = Status.outputPending;
         }
         else
         {
@@ -703,6 +695,7 @@ void[] decompress(const(void)[] data, DecompressionPolicy policy = Decompression
     debug(zlib) writeln("decompress(void[])");
 
     auto decomp = Decompressor.create(policy);
+
     decomp.input = data;
     void[] output;
     output.reserve(data.length);
@@ -961,7 +954,7 @@ unittest
  +/
 unittest
 {
-    debug(zlib) writeln("decompress(InputRange, array) -- ");
+    debug(zlib) writeln("decompress(InputRange, array)");
 
     auto uncompressed = "Lorem ipsum dolor sit amet";
     ubyte[] compressed = [
