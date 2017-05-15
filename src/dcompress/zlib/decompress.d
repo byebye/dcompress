@@ -247,7 +247,13 @@ private:
 
     c_zlib.z_stream _zlibStream;
     DecompressionPolicy _policy;
-    bool _outputPending;
+    enum Status : ubyte
+    {
+        outputPending,
+        needsMoreInput,
+        finished
+    }
+    Status _status = Status.needsMoreInput;
 
 public:
 
@@ -366,7 +372,7 @@ public:
      +/
     @property bool outputPending() const
     {
-        return _outputPending;
+        return _status == Status.outputPending;
     }
 
     /++
@@ -375,19 +381,23 @@ public:
     unittest
     {
         debug(zlib) writeln("Decompressor.outputPending");
-        //auto data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
-        //auto policy = DecompressionPolicy.defaultPolicy;
-        //// Very small buffer just for presentation purposes.
-        //policy.buffer = new ubyte[1];
-        //auto decomp = Decompressor.create(policy);
-        //
-        //auto output = decomp.decompress(data);
-        //assert(output.length == 1);
-        //assert(decomp.outputPending);
-        //// More compressed data without providing more input.
-        //output ~= decomp.decompressPending();
-        //assert(output.length == 2);
+        auto uncompressed = "Lorem ipsum dolor sit amet";
+        ubyte[] compressed = [
+            120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
+            207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
+
+        auto policy = DecompressionPolicy.defaultPolicy;
+        // Very small buffer just for presentation purposes.
+        policy.buffer = new ubyte[1];
+        auto decomp = Decompressor.create(policy);
+
+        auto output = decomp.decompress(compressed).dup;
+        assert(output.length == 1);
+        assert(decomp.outputPending);
+        // More decompressed data without providing more input.
+        output ~= decomp.decompressPending();
+        assert(output.length == 2);
     }
 
     /++
@@ -407,40 +417,35 @@ public:
     }
 
     /++
-     + Check if more data to decompress may be provided safely.
-     +/
-    unittest
-    {
-        debug(zlib) writeln("Decompressor.inputProcessed");
-        //auto data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
-    }
-
-    /++
      + Typical use case while compressing multiple chunks of data.
      +/
     unittest
     {
-        debug(zlib) writeln("Decompressor.inputProcessed -- multiple chunks of data");
-        //auto data = ["Lorem ipsum", " dolor sit amet,", " consectetur", " adipiscing elit. "];
-        //
-        //auto policy = DecompressionPolicy.defaultPolicy;
-        //// Very small buffer just for testing purposes.
-        //policy.buffer = new ubyte[2];
-        //auto decomp = Decompressor.create(policy);
-        //
-        //void[] output;
-        //foreach (chunk; data)
-        //{
-        //    output ~= decomp.decompress(chunk);
-        //    while (!decomp.inputProcessed)
-        //        output ~= decomp.decompressPending();
-        //}
-        //do
-        //{
-        //    output ~= decomp.flush();
-        //} while (decomp.outputPending);
-        //
-        //// TODO assert
+        debug(zlib) writeln("Decompressor.inputProcessed");
+
+        auto uncompressed = "Lorem ipsum dolor sit amet";
+        ubyte[][] compressed = [
+            [120, 156, 243, 201, 47, 74], [205, 85, 200, 44], [40, 46, 205, 85, 72, 201],
+            [207, 201, 47, 82], [40, 206, 44, 81, 72, 204, 77, 45], [1, 0, 131, 213, 9, 197]];
+
+        auto policy = DecompressionPolicy.defaultPolicy;
+        // Very small buffer just for testing purposes.
+        policy.buffer = new ubyte[2];
+        auto decomp = Decompressor.create(policy);
+
+        void[] output;
+        foreach (chunk; compressed)
+        {
+            output ~= decomp.decompress(chunk);
+            while (!decomp.inputProcessed)
+                output ~= decomp.decompressPending();
+        }
+        do
+        {
+            output ~= decomp.flush();
+        } while (decomp.outputPending);
+
+        assert(cast(string) output == uncompressed);
     }
 
     /++
@@ -456,6 +461,7 @@ public:
     {
         _zlibStream.next_in = cast(const(ubyte)*) data.ptr;
         _zlibStream.avail_in = cast(uint) data.length; // TODO check for overflow
+        _status = Status.outputPending;
     }
 
     /++
@@ -465,15 +471,23 @@ public:
     unittest
     {
         debug(zlib) writeln("Decompressor.input -- one-shot decompression");
-        //auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
-        //
-        //auto decomp = Decompressor.create();
-        //decomp.input = data;
-        //// Warning: for one-shot decompression enough buffer space needs to be provided.
-        //auto output = decomp.flush();
-        //assert(decomp.inputProcessed);
-        //assert(decomp.outputPending == false);
-        //// TODO assert
+
+        auto uncompressed = "Lorem ipsum dolor sit amet";
+        ubyte[] compressed = [
+            120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
+            207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
+
+        // Warning: for one-shot decompression enough buffer space needs to be provided.
+        auto policy = DecompressionPolicy.defaultPolicy;
+        policy.buffer = new ubyte[uncompressed.length];
+
+        auto decomp = Decompressor.create(policy);
+        decomp.input = compressed;
+        auto output = decomp.flush().dup;
+
+        assert(decomp.inputProcessed);
+        assert(decomp.outputPending == false);
+        assert(cast(string) output == uncompressed);
     }
 
     /++
@@ -488,8 +502,8 @@ public:
      +
      + If there is no enough space in the buffer for the decompressed data then
      + `outputPending` will become `true`. The `data` should be completely
-     +  processed, i.e. `inputProcessed == true`, before the next invocation
-     +  of this method, otherwise the decompression process may be broken.
+     + processed, i.e. `inputProcessed == true`, before the next invocation
+     + of this method, otherwise the decompression process may be broken.
      +
      + Params:
      + data = An input data to be decompressed.
@@ -515,13 +529,26 @@ public:
      +/
     unittest
     {
-        debug(zlib) writeln("Decompressor.decompressPending");
-        //auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
-        //
-        //auto decomp = Decompressor.create();
-        //auto output = decomp.decompress(data);
-        //assert(output.length > 0);
-        //// TODO assert correctness
+        debug(zlib) writeln("Decompressor.decompress");
+
+        auto uncompressed = "Lorem ipsum dolor sit amet";
+        ubyte[][] compressed = [
+            [120, 156, 243, 201, 47, 74], [205, 85, 200, 44], [40, 46, 205, 85, 72, 201],
+            [207, 201, 47, 82], [40, 206, 44, 81, 72, 204, 77, 45], [1, 0, 131, 213, 9, 197]];
+
+        // Provide enough buffer which will fit all the decompressed data.
+        auto policy = DecompressionPolicy.defaultPolicy;
+        policy.buffer = new ubyte[uncompressed.length];
+        auto decomp = Decompressor.create(policy);
+
+        // Warning: if not enough buffer space is provided, `inputProcessed`
+        // and `outputPending` should be used for a safe decompression.
+        void[] output;
+        foreach (chunk; compressed)
+            output ~= decomp.decompress(chunk);
+        output ~= decomp.flush();
+
+        assert(cast(string) output == uncompressed);
     }
 
     /++
@@ -558,19 +585,23 @@ public:
     unittest
     {
         debug(zlib) writeln("Decompressor.decompressPending");
-        //auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
-        //
-        //auto policy = DecompressionPolicy.defaultPolicy;
-        //// Very small buffer just for testing purposes.
-        //policy.buffer = new ubyte[1];
-        //auto decomp = Decompressor.create(policy);
-        //
-        //// zlib header is returned immediately and occupies 2 bytes.
-        //auto output = decomp.decompress(data);
-        //assert(output.length == 1);
-        //assert(decomp.outputPending);
-        //output ~= decomp.decompressPending();
-        //assert(output.length == 2);
+
+        auto uncompressed = "Lorem ipsum dolor sit amet";
+        ubyte[] compressed = [
+            120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
+            207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
+
+        auto policy = DecompressionPolicy.defaultPolicy;
+        // Very small buffer just for presentation purposes.
+        policy.buffer = new ubyte[5];
+        auto decomp = Decompressor.create(policy);
+
+        auto output = decomp.decompress(compressed).dup;
+        assert(output.length == 5);
+        assert(decomp.outputPending);
+
+        output ~= decomp.decompressPending();
+        assert(output.length == 10);
     }
 
     /++
@@ -586,53 +617,69 @@ public:
     }
 
     /++
-     + Flush the remaining output.
+     + Flush the remaining output and finish the current decompression process.
      +/
     unittest
     {
         debug(zlib) writeln("Decompressor.flush");
-        //auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
-        //
-        //auto decomp = Decompressor.create();
-        //
-        //// zlib header is returned immediately and occupies 2 bytes.
-        //auto output = decomp.decompress(data);
-        //assert(output.length == 2);
-        //// Input processed but data not returned.
-        //assert(decomp.inputProcessed);
-        //assert(decomp.outputPending == false);
-        //
-        //output ~= decomp.flush();
-        //assert(decomp.outputPending == false);
-        //assert(output.length > 2);
+
+        auto uncompressed = "Lorem ipsum dolor sit amet";
+        ubyte[] compressed = [
+            120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
+            207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
+
+        auto policy = DecompressionPolicy.defaultPolicy;
+        // Very small buffer just for presentation purposes.
+        policy.buffer = new ubyte[15];
+        auto decomp = Decompressor.create(policy);
+
+        auto output = decomp.decompress(compressed).dup;
+        assert(output.length == 15);
+
+        // Using flush indicates that all the input data has been provided.
+        output ~= decomp.flush();
+        assert(cast(string) output == uncompressed);
     }
 
     private const(void)[] decompress(FlushMode mode)
     {
+        // Nothing to do here.
+        if (_status != Status.outputPending)
+            return buffer[0 .. 0];
+
         _zlibStream.next_out = cast(ubyte*) buffer.ptr;
         _zlibStream.avail_out = cast(uint) buffer.length;
 
+        writeln("before: ", mode, " ", buffer.length - _zlibStream.avail_out, " ", _zlibStream.avail_in);
         auto status = c_zlib.inflate(&_zlibStream, mode);
+
+        import std.conv : to;
+        writeln(to!ZlibStatus(status));
 
         if (status == ZlibStatus.streamEnd)
         {
-            _outputPending = false;
+            _status = Status.finished;
             status = c_zlib.inflateReset(&_zlibStream);
             assert(status == ZlibStatus.ok);
         }
         else if (status == ZlibStatus.ok)
         {
-            _outputPending = (_zlibStream.avail_out == 0);
+            if (_zlibStream.avail_out == 0)
+                _status = Status.outputPending;
+            else
+                _status = Status.needsMoreInput;
         }
-        else if (status == ZlibStatus.dataError)
+        else if (status == ZlibStatus.bufferError)
+        {
+            _status = Status.outputPending;
+        }
+        else
         {
             // TODO Consider calling inflateEnd or inflateSync
-            throw new ZlibException(status, _zlibStream.msg);
-        }
-        else if (status != ZlibStatus.bufferError) // Not a fatal error
-        {
-            // TODO Consider calling inflateEnd
-            throw new ZlibException(status);
+            if (status == ZlibStatus.dataError)
+                throw new ZlibException(status, _zlibStream.msg);
+            else
+                throw new ZlibException(status);
         }
 
         immutable writtenBytes = buffer.length - _zlibStream.avail_out;

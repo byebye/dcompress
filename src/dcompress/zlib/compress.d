@@ -839,7 +839,7 @@ public:
      +/
     unittest
     {
-        debug(zlib) writeln("Compressor.compressPending");
+        debug(zlib) writeln("Compressor.compress");
         auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
         auto comp = Compressor.create();
