@@ -8,36 +8,22 @@ import dcompress.zlib;
 import std_zlib = std.zlib;
 import std.algorithm : map, joiner;
 import std.array : array, join;
+import std.stdio;
 
-void main() {
-/+
-    auto zipFile = new ZipFile("file.zip");
-    auto gzFile = new GzipFile("file.gzip");
-    auto bz2File = new Bz2File("file.bz2");
-+/
-/+
-    auto tarFile = new TarFile("file.tar");
-    auto tarGzFile = new TarFile("file.tar.gz"); // transparent decompression
-+/
-
-    //struct X { int a, b, c; string s; }
-    //auto x = X(1, 2, 3, "aaaa");
-    //string a = "aaa";
-    //compress(a);
-    //import std.stdio;
-    //import std.file;
-    //"xxx".compress();
-    //File("test.txt", "r").byChunk(1024 * 4).compress();
-    //File("test.txt", "r").byLine.compress(stdout.lockingTextWriter);
-    ////auto data = compress(x);
-    //
-    //auto gzipFile = CompressedFile!Gzip("test.gz", "rw", 1024);
-    //
-    //auto bz2File = CompressedFile!Bz2("test.bz2");
-
-
+void testZlib()
+{
     immutable data = ["aaa", "bbb", "ccc", "dafasdfadfaf", "dfadfa", "adfaf" ];
     immutable dataJoined = data.dup.joiner.array;
+
+    {
+        auto c = Compressor.create();
+        c.compress(dataJoined);
+        c.flush();
+        c.flush();
+        c.flush();
+        c.flush();
+        c.flush();
+    }
     {
         auto policy = CompressionPolicy.defaultPolicy();
         policy.buffer = new ubyte[2];
@@ -83,4 +69,41 @@ void main() {
         output ~= cast(ubyte[]) comp.flush();
         writeln(output);
     }
+}
+
+void testBz2()
+{
+    import dcompress.etc.c.bz2;
+
+    //File f = File("examples/test.bz2");
+    //auto data = new ubyte[](f.size);
+    //f.rawRead(data);
+    //writeln(data);
+
+    ubyte[] data = [66, 90, 104, 57, 49, 65, 89, 38, 83, 89, 107, 38, 89, 215,
+    0, 0, 5, 85, 128, 0, 16, 64, 5, 0, 4, 46, 167, 222, 0, 32, 0, 80, 166, 19,
+    77, 1, 166, 33, 20, 240, 153, 12, 73, 167, 148, 62, 214, 57, 2, 136, 10,
+    193, 67, 46, 70, 42, 205, 217, 226, 214, 126, 122, 178, 155, 77, 109, 175,
+    1, 149, 2, 136, 131, 113, 209, 68, 254, 46, 228, 138, 112, 161, 32, 214,
+    76, 179, 174];
+
+    auto output = new ubyte[](4096);
+    bz_stream stream;
+    stream.avail_out = cast(uint)output.length;
+    stream.next_out = output.ptr;
+
+    int init_error = BZ2_bzDecompressInit(&stream, 0, 0);
+    int bzipresult = BZ2_bzDecompress(&stream);
+
+    stream.avail_in = cast(uint)data.length;
+    stream.next_in = data.ptr;
+
+    bzipresult = BZ2_bzDecompress(&stream);
+    int read = stream.total_out_lo32;
+    BZ2_bzDecompressEnd(&stream);
+    writeln(cast(string) output[0 .. read]);
+}
+
+void main() {
+    testBz2();
 }
