@@ -163,7 +163,8 @@ public:
 
     ~this()
     {
-        c_bz2.BZ2_bzCompressEnd(&_bzStream);
+        if (_status != Status.idle)
+            c_bz2.BZ2_bzCompressEnd(&_bzStream);
     }
 
     static Compressor create(CompressionPolicy policy = CompressionPolicy.defaultPolicy)

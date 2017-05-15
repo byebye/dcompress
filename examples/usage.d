@@ -104,6 +104,14 @@ void testBz2()
     writeln(cast(string) output[0 .. read]);
 }
 
+void bz2()
+{
+    import dcompress.bz2;
+    auto data = "Lorem ipsum dolor sit amet";
+    writeln(compress(data));
+}
+
 void main() {
-    testBz2();
+    //testBz2();
+    bz2();
 }
