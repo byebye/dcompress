@@ -5,7 +5,7 @@ module dcompress.bz2.common;
 
 import c_bz2 = dcompress.etc.c.bz2;
 
-package enum
+package enum Bz2Action
 {
     run = c_bz2.BZ_RUN,
     flush = c_bz2.BZ_FLUSH,
