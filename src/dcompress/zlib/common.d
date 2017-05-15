@@ -1,12 +1,12 @@
 /++
- + Contains common functionalities used inside this package.
+ + Contains common functionalities used by `dcompress.zlib` package.
  +/
 module dcompress.zlib.common;
 
 import c_zlib = etc.c.zlib;
 
 /++
- + Status codes returned by zlib library.
+ + Status codes returned by the zlib library.
  +/
 package enum ZlibStatus
 {

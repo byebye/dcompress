@@ -1,5 +1,5 @@
 /++
- + Provides compressing abstractions.
+ + Provides compressing abstractions for zlib format.
  +/
 module dcompress.zlib.compress;
 

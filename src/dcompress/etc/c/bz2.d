@@ -1,5 +1,5 @@
 /++
- + D bindings for $(LINK2 http://www.bzip.org/, bzip2 library) written in C.
+ + D bindings for $(LINK2 http://www.bzip.org/, libbzip2 library) written in C.
  +/
 module dcompress.etc.c.bz2;
 
