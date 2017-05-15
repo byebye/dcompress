@@ -558,9 +558,9 @@ public:
 
         assert(comp.buffer.length >= compressed.length);
         assert(comp.outputPending == false);
-        // TODO Do not depend on std.zlib.
-        import sz = std.zlib;
-        assert(compressed == sz.compress(data));
+
+        import dcompress.zlib : decompress;
+        assert(decompress(compressed) == data);
     }
 
     /++
@@ -633,7 +633,7 @@ public:
         policy.buffer = new ubyte[1];
         auto comp = Compressor.create(policy);
 
-        auto output = comp.compress(data);
+        auto output = comp.compress(data).dup;
         assert(output.length == 1);
         assert(comp.outputPending);
         // More compressed data without providing more input.
@@ -683,7 +683,7 @@ public:
         // zlib header which is returned immediately occupies 2 bytes.
         // More output may not be returned until additional input has been
         // provided - for a better compression.
-        auto output = comp.compress(data);
+        auto output = comp.compress(data).dup;
         assert(output.length == 1);
         assert(comp.bytesPending == 1);
         // More compressed data without providing more input.
@@ -727,7 +727,7 @@ public:
 
         // zlib header which is returned immediately occupies 2 bytes and
         // will delay the compression process.
-        auto output = comp.compress(data);
+        auto output = comp.compress(data).dup;
         assert(output.length == 1);
         assert(comp.inputProcessed == false);
         // Grabbing the 2-byte header allows to compress the input entirely
@@ -762,7 +762,9 @@ public:
             output ~= comp.flush();
         } while (comp.outputPending);
 
-        // TODO assert
+        import dcompress.zlib : decompress;
+        import std.range : join;
+        assert(decompress(output) == data.join);
     }
 
     /++
@@ -792,10 +794,12 @@ public:
         auto comp = Compressor.create();
         comp.input = data;
         // Warning: for one-shot compression enough buffer space needs to be provided.
-        auto output = comp.flush();
+        auto output = comp.flush().dup;
         assert(comp.inputProcessed);
         assert(comp.outputPending == false);
-        // TODO assert
+
+        import dcompress.zlib : decompress;
+        assert(decompress(output) == data);
     }
 
     /++
@@ -843,9 +847,14 @@ public:
         auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
         auto comp = Compressor.create();
-        auto output = comp.compress(data);
+        auto output = comp.compress(data).dup;
         assert(output.length > 0);
-        // TODO assert correctness
+
+        // Warning: if not enough buffer space is provided, `inputProcessed`
+        // and `outputPending` should be used for a safe compression.
+        output ~= comp.flush();
+        import dcompress.zlib : decompress;
+        assert(decompress(output) == data);
     }
 
     /++
@@ -880,7 +889,7 @@ public:
         auto comp = Compressor.create(policy);
 
         // zlib header is returned immediately and occupies 2 bytes.
-        auto output = comp.compress(data);
+        auto output = comp.compress(data).dup;
         assert(output.length == 1);
         assert(comp.outputPending);
         output ~= comp.compressPending();
@@ -920,15 +929,17 @@ public:
         auto comp = Compressor.create();
 
         // zlib header is returned immediately and occupies 2 bytes.
-        auto output = comp.compress(data);
+        auto output = comp.compress(data).dup;
         assert(output.length == 2);
         // Input processed but data not returned.
         assert(comp.inputProcessed);
         assert(comp.outputPending == false);
 
+        // Warning: if not enough buffer space is provided, `inputProcessed`
+        // and `outputPending` should be used for a safe compression.
         output ~= comp.flush();
-        assert(comp.outputPending == false);
-        assert(output.length > 2);
+        import dcompress.zlib : decompress;
+        assert(decompress(output) == data);
     }
 
     /++
@@ -944,7 +955,7 @@ public:
         policy.buffer = new ubyte[2];
         auto comp = Compressor.create(policy);
 
-        auto output = comp.compress(data);
+        auto output = comp.compress(data).dup;
         assert(output.length == 2);
         output ~= comp.flush();
         // Repeat with default mode.
@@ -1042,7 +1053,8 @@ unittest
     auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
     auto output = compress(data);
-    // TODO assert correctness
+    import dcompress.zlib : decompress;
+    assert(decompress(output) == data);
 }
 
 import dcompress.primitives : isCompressInput, isCompressOutput;
@@ -1073,41 +1085,9 @@ if (!isArray!InR && isCompressInput!InR)
 {
     debug(zlib) writeln("compress!Range");
 
-    import std.range.primitives : ElementType;
-    import std.traits : Unqual;
-    static if (is(Unqual!(ElementType!InR) == ubyte))
-    {
-        debug(zlib) writeln("ElementType!InR == ubyte");
-
-        import std.range.primitives : hasLength;
-        static if (hasLength!InR)
-        {
-            if (policy.maxInputChunkSize >= data.length)
-            {
-                debug(zlib) writeln("hasLength!InR && policy.maxInputChunkSize >= data.length");
-
-                auto comp = Compressor.createWithSufficientBuffer(data.length, policy);
-                auto input = new ubyte[data.length];
-                import std.algorithm.mutation : copy;
-                copy(data, input);
-                comp.input = input;
-                return cast(void[]) comp.flush();
-            }
-        }
-        void[] output;
-        auto comp = Compressor.create(policy);
-        comp.compressAllByCopyChunk(data, output);
-        return output;
-    }
-    else // isArray!(ElementType!InR)
-    {
-        debug(zlib) writeln("isArray!(ElementType!InR)");
-
-        void[] output;
-        auto comp = Compressor.create(policy);
-        comp.compressAllByChunk(data, output);
-        return output;
-    }
+    void[] output;
+    compress(data, output, policy);
+    return output;
 }
 
 /++
@@ -1122,7 +1102,8 @@ unittest
     auto range = inputRange(cast(ubyte[]) data);
     auto output = compress(range);
 
-    // TODO assert correctness
+    import dcompress.zlib : decompress;
+    assert(decompress(output) == data);
 }
 
 /++
@@ -1143,7 +1124,9 @@ unittest
     // Inptu won't fit entirely into a chunk, no one-call-compress optimization possible.
     policy.maxInputChunkSize = 4;
     auto output2 = compress(range, policy);
-    // TODO assert correctness
+
+    import dcompress.zlib : decompress;
+    assert(decompress(output) == data);
 }
 
 /++
@@ -1158,7 +1141,9 @@ unittest
     auto range = inputRange(data);
     auto output = compress(range);
 
-    // TODO assert correctness
+    import dcompress.zlib : decompress;
+    import std.range : join;
+    assert(decompress(output) == data.join);
 }
 
 /++
@@ -1187,7 +1172,7 @@ if (isCompressOutput!OutR)
 
         if (policy.buffer.isNull)
         {
-            // In case the output.length == 0, because cannot be assigned in such case
+            // In case the output.length == 0, because cannot be assigned in such case.
             output.length = 1;
             // The output will be directly reallocated this way.
             policy.buffer = output;
@@ -1230,10 +1215,12 @@ unittest
     compress(data, output);
     assert(output.buffer == compress(data));
 
+    import dcompress.zlib : decompress;
+    assert(decompress(output.buffer) == data);
+
     void[] outputBuff;
     compress(data, outputBuff);
     assert(outputBuff == output.buffer);
-    // TODO assert correctness
 }
 
 /++
@@ -1294,6 +1281,9 @@ unittest
     compress(range, output);
     assert(output.buffer == compress(data));
 
+    import dcompress.zlib : decompress;
+    assert(decompress(output.buffer) == data);
+
     auto range2 = inputRange!"withLength"(cast(ubyte[]) data);
     auto outputBuff = new ubyte[10];
     compress(range2, outputBuff);
@@ -1303,8 +1293,7 @@ unittest
     auto range3 = inputRange(cast(ubyte[]) data);
     auto outputBuff2 = new ubyte[10];
     compress(range3, outputBuff2);
-    writeln(outputBuff2);
-    // TODO assert correctness
+    assert(outputBuff2 == output.buffer);
 }
 
 private void compressAllByChunk(InR, OutR)(ref Compressor comp, ref InR data, ref OutR output)
