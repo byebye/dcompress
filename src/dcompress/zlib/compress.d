@@ -1,3 +1,6 @@
+/++
+ + Provides compressing abstractions.
+ +/
 module dcompress.zlib.compress;
 
 debug = zlib;

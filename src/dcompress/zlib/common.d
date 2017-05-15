@@ -1,3 +1,6 @@
+/++
+ + Contains common functionalities used inside this package.
+ +/
 module dcompress.zlib.common;
 
 import c_zlib = etc.c.zlib;

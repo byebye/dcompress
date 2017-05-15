@@ -1,3 +1,6 @@
+/++
+ + Provides decompressing abstractions.
+ +/
 module dcompress.zlib.decompress;
 
 debug = zlib;
