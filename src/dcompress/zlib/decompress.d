@@ -1,5 +1,5 @@
 /++
- + Provides decompressing abstractions.
+ + Provides decompressing abstractions for zlib format.
  +/
 module dcompress.zlib.decompress;
 
@@ -552,7 +552,7 @@ public:
     }
 
     /++
-     + Modifies behavior of inflating compressed data.
+     + Modifies decompression mode.
      +/
     private enum FlushMode
     {
@@ -570,7 +570,7 @@ public:
      + Note: Check `inputProcessed` to see if additional calls are required to
      +       fully retrieve the data before providing more input.
      +
-     + Returns: Slice of the internal buffer with the compressed data.
+     + Returns: Slice of the internal buffer with the decompressed data.
      +
      + Throws: `ZlibException` if the zlib library returns error.
      +/
@@ -580,7 +580,7 @@ public:
     }
 
     /++
-     + Retrieve the remaining compressed data that didn't fit into the buffer.
+     + Retrieve the remaining decompressed data that didn't fit into the buffer.
      +/
     unittest
     {
@@ -605,9 +605,9 @@ public:
     }
 
     /++
-     + Flushes the remaining compressed data and finishes compressing the input.
+     + Flushes the remaining decompressed data and finishes compressing the input.
      +
-     + Returns: Slice of the internal buffer with the compressed data.
+     + Returns: Slice of the internal buffer with the decompressed data.
      +
      + Throws: `ZlibException` if the zlib library returns error.
      +/
@@ -680,7 +680,7 @@ public:
 }
 
 /++
- + Decompresses all the bytes from the array at once using the given compression policy.
+ + Decompresses all the bytes from the array at once using the given decompression policy.
  +
  + Params:
  + data = Array of bytes to be decompressed.
@@ -734,7 +734,7 @@ import std.traits : isArray;
  + which means that entire input can be provided to the zlib library at once.
  +
  + Params:
- + data = Input range of bytes to be compressed.
+ + data = Input range of bytes to be decompressed.
  + policy = A policy defining different aspects of the decompression process.
  +
  + Returns: Decompressed data.
@@ -821,7 +821,7 @@ unittest
 
 /++
  + Decompresses all the bytes from the array using the given decompression policy
- + and outputs the decompressed data directly to the provided output range.
+ + and outputs the data directly to the provided output range.
  +
  + If `output` is an array, the compressed data will replace its content - instead
  + of being appended.
@@ -871,9 +871,9 @@ unittest
 
 /++
  + Decompresses all the bytes from the input range using the given decompression
- + policy and outputs the decompressed data directly to the provided output range.
+ + policy and outputs the data directly to the provided output range.
  +
- + If `output` is an array, the compressed data will replace its content - instead
+ + If `output` is an array, the decompressed data will replace its content - instead
  + of being appended.
  +
  + Because the zlib library is used underneath, the `data` needs to be provided
@@ -886,8 +886,8 @@ unittest
  +
  + Params:
  + data = Input range of bytes to be decompressed.
- + output = Output range taking the compressed bytes.
- + policy = A policy defining different aspects of the compression process.
+ + output = Output range taking the decompressed bytes.
+ + policy = A policy defining different aspects of the decompression process.
  +
  + Throws: `ZlibException` if any error occurs.
  +/

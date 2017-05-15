@@ -595,6 +595,7 @@ public:
      +
      + Returns: The current compression policy.
      +/
+    // TODO Consider returning a reference.
     @property const(CompressionPolicy) policy() const
     {
         return _policy;
@@ -984,11 +985,6 @@ public:
         _zlibStream.next_out = cast(ubyte*) buffer.ptr;
         _zlibStream.avail_out = cast(uint) buffer.length;
 
-        debug(zlib) {
-            import std.stdio;
-            writefln("In bytes: %d, Out bytes: %d", _zlibStream.avail_in, _zlibStream.avail_out);
-        }
-
         // * ZlibStatus.ok -- progress has been made
         // * ZlibStatus.bufferError -- no progress possible
         // * ZlibStatus.streamEnd -- all input has been consumed and all output
@@ -1073,11 +1069,10 @@ import std.traits : isArray;
  + Because the zlib library is used underneath, the `data` needs to be provided
  + as a built-in array - this is done by allocating an array and copying the input
  + into it chunk by chunk. This chunk size is controlled by `policy.maxInputChunkSize`.
- + The greater the chunk the better compression and less reallocations of the
- + output array. In particular, if `data` has `length` property and
- + `policy.maxInputChunkSize >= data.length`, the output size can be estimated
- + and data will be compressed at once - with only one allocation for the input
- + chunk array and one for the output.
+ + The greater the chunk the better and faster the compression is. In particular,
+ + if `data` has `length` property and `policy.maxInputChunkSize >= data.length`,
+ + the output size can be estimated and data will be compressed at once - which
+ + is faster and gives a better compression compared to compression in chunks.
  +
  + Params:
  + data = Input range of bytes to be compressed.
@@ -1155,13 +1150,13 @@ unittest
 
 /++
  + Compresses all the bytes using the given compression policy and outputs
- + the compressed data directly to the provided output range.
+ + the data directly to the provided output range.
  +
  + If `output` is an array, the compressed data will replace its content - instead
  + of being appended.
  +
  + Params:
- + data = Bytes to be compressed.
+ + data = Array of bytes to be compressed.
  + output = Output range taking the compressed bytes.
  + policy = A policy defining different aspects of the compression process.
  +
@@ -1193,19 +1188,8 @@ if (isCompressOutput!OutR)
         debug(zlib) writeln("isArray!OutR == false");
 
         auto comp = Compressor.create(policy);
-        immutable minBufferSize = comp.getCompressedSizeBound(data.length);
-        if (minBufferSize <= comp.buffer.length)
-        {
-            import std.range.primitives : put;
-            comp.input = data;
-            auto outArray = cast(const(ubyte)[]) comp.flush();
-            put(output, outArray);
-        }
-        else
-        {
-            comp.compressAll(data, output);
-            comp.flushAll(output);
-        }
+        comp.input = data;
+        comp.flushAll(output);
     }
 }
 
@@ -1231,7 +1215,28 @@ unittest
 }
 
 /++
- + ditto
+ + Compresses all the bytes from the input range at once using the given compression policy
+ + and outputs the data directly to the provided output range.
+ +
+ + If `output` is an array, the compressed data will replace its content - instead
+ + of being appended.
+ +
+ + Because the zlib library is used underneath, the `data` needs to be provided
+ + as a built-in array - this is done by allocating an array and copying the input
+ + into it chunk by chunk. This chunk size is controlled by `policy.maxInputChunkSize`.
+ + The greater the chunk the better and faster the compression is. In particular,
+ + if `data` has `length` property and `policy.maxInputChunkSize >= data.length`,
+ + the output size can be estimated and data will be compressed at once - which
+ + is faster and gives a better compression compared to compression in chunks.
+ +
+ + Params:
+ + data = Input range of bytes to be compressed.
+ + output = Output range taking the compressed bytes.
+ + policy = A policy defining different aspects of the compression process.
+ +
+ + Returns: Compressed data.
+ +
+ + Throws: `ZlibException` if any error occurs.
  +/
 void compress(InR, OutR)(InR data, ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
@@ -1259,7 +1264,7 @@ if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
             }
         }
         auto comp = Compressor.create(policy);
-        // Array may have some space allocated.
+        // Array content is replaced.
         static if (isArray!OutR)
             output.length = 0;
         comp.compressAllByCopyChunk(data, output);
@@ -1291,6 +1296,7 @@ unittest
     import dcompress.zlib : decompress;
     assert(decompress(output.buffer) == data);
 
+    // Output to an array, which will be reallocated.
     auto range2 = inputRange!"withLength"(cast(ubyte[]) data);
     auto outputBuff = new ubyte[10];
     compress(range2, outputBuff);
