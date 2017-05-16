@@ -230,15 +230,24 @@ public:
         _bzStream.next_out = cast(ubyte*) buffer.ptr;
         _bzStream.avail_out = cast(uint) buffer.length;
 
-        writeln(_status, " ", _bzStream.avail_in);
-
         auto status = c_bz2.BZ2_bzDecompress(&_bzStream);
 
         if (status == Bz2Status.streamEnd)
         {
-            _status = Status.idle;
-            status = c_bz2.BZ2_bzDecompressEnd(&_bzStream);
-            assert(status == Bz2Status.ok);
+            if (inputProcessed)
+            {
+                status = c_bz2.BZ2_bzDecompressEnd(&_bzStream);
+                assert(status == Bz2Status.ok);
+                _status = Status.idle;
+            }
+            else
+            {
+                auto nextStreamData = _bzStream.next_in[0 .. _bzStream.avail_in];
+                status = c_bz2.BZ2_bzDecompressEnd(&_bzStream);
+                assert(status == Bz2Status.ok);
+                initStream();
+                input = nextStreamData;
+            }
         }
         else if (status != Bz2Status.ok)
         {
@@ -251,6 +260,8 @@ public:
 
 /++
  + Decompresses all the bytes from the array at once using the given decompression policy.
+ +
+ + If `data` is a concatenation of multiple compressed streams, decompresses all of them.
  +
  + Params:
  + data = Array of bytes to be decompressed.
@@ -290,11 +301,37 @@ unittest
     assert(output == uncompressed);
 }
 
+/++
+ + If input is a concatenation of multiple compressed streams, decompress all of them.
+ +/
+unittest
+{
+    auto src1 = "Lorem ipsum ";
+    auto src2 = "dolor sit amet";
+    auto uncompressed = src1 ~ src2;
+
+    ubyte[] stream1 = [66, 90, 104, 54, 49, 65, 89, 38, 83, 89, 91, 217, 196,
+    169, 0, 0, 1, 21, 128, 64, 0, 0, 4, 2, 34, 218, 0, 32, 0, 34, 26, 26, 105,
+    161, 0, 48, 200, 8, 50, 117, 115, 241, 119, 36, 83, 133, 9, 5, 189, 156, 74, 144];
+    ubyte[] stream2 = [66, 90, 104, 54, 49, 65, 89, 38, 83, 89, 202, 188, 199,
+    248, 0, 0, 1, 145, 128, 64, 0, 38, 38, 156, 0, 32, 0, 34, 0, 15, 80, 128,
+    105, 166, 131, 157, 244, 47, 8, 192, 241, 119, 36, 83, 133, 9, 12, 171, 204, 127, 128];
+
+    assert(cast(string) decompress(stream1) == src1);
+    assert(cast(string) decompress(stream2) == src2);
+
+    auto compressed = stream1 ~ stream2;
+
+    assert(cast(string) decompress(compressed) == uncompressed);
+}
+
 import dcompress.primitives : isCompressInput, isCompressOutput;
 import std.traits : isArray;
 
 /++
  + Decompresses all the bytes from the input range at once using the given compression policy.
+ +
+ + If `data` is a concatenation of multiple compressed streams, decompresses all of them.
  +
  + Because the zlib library is used underneath, the `data` needs to be provided
  + as a built-in array - this is done by allocating an array and copying the input
@@ -396,6 +433,8 @@ unittest
  + Decompresses all the bytes from the array using the given decompression policy
  + and outputs the data directly to the provided output range.
  +
+ + If `data` is a concatenation of multiple compressed streams, decompresses all of them.
+ +
  + If `output` is an array, the compressed data will replace its content - instead
  + of being appended.
  +
@@ -446,6 +485,8 @@ unittest
 /++
  + Decompresses all the bytes from the input range using the given decompression
  + policy and outputs the data directly to the provided output range.
+ +
+ + If `data` is a concatenation of multiple compressed streams, decompresses all of them.
  +
  + If `output` is an array, the compressed data will replace its content - instead
  + of being appended.
