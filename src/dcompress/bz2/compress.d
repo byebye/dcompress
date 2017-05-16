@@ -1,5 +1,5 @@
 /++
- + Provides decompressing abstractions for bz2 format.
+ + Provides compressing abstractions for bz2 format.
  +/
 module dcompress.bz2.compress;
 
