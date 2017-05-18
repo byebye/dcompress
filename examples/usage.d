@@ -111,7 +111,14 @@ void bz2()
     writeln(compress(data));
 }
 
+void testTar()
+{
+    import dcompress.tar;
+    TarFile.open("lib.tar");
+}
+
 void main() {
     //testBz2();
-    bz2();
+    //bz2();
+    testTar();
 }

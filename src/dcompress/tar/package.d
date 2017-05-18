@@ -10,8 +10,8 @@ module dcompress.tar;
 // in ASCII. Each numeric field of width w contains w minus 1 digits, and a
 // null.
 struct TarHeader
-{                              /* byte offset */
-    char[100] filename;        /*   0 */
+{
+    char[100] filename;
     // Provides nine bits specifying file permissions and three bits to specify
     // the Set UID, Set GID, and Save Text (sticky) modes. Values for these bits
     // are defined above. When special permissions are required to create a file
@@ -21,46 +21,48 @@ struct TarHeader
     // system restoring files from the archive will be ignored. Unsupported
     // modes should be faked up when creating or updating an archive; e.g., the
     // group permission could be copied from the other permission.
-    char[8] mode;                 /* 100 */
+    char[8] mode;
     // The uid and gid fields are the numeric user and group ID of the file
     // owners, respectively. If the operating system does not support numeric
     // user or group IDs, these fields should be ignored.
-    char[8] userId;                  /* 108 */
-    char[8] groupId;                  /* 116 */
-    // The size of the file in bytes; linked files are archived with this field
-    // specified as zero.
-    char[12] size;                /* 124 */
+    char[8] userId;
+    char[8] groupId;
+    // The ASCII representation of the octal value of size of the file in bytes;
+    // linked files are archived with this field specified as zero.
+    char[12] size;
     // The data modification time of the file at the time it was archived. It is
     // the ASCII representation of the octal value of the last time the file's
     // contents were modified, represented as an integer number of seconds since
     // January 1, 1970, 00:00 Coordinated Universal Time.
-    char[12] modificationTime;               /* 136 */
+    char[12] modificationTime;
     // The ASCII representation of the octal value of the simple sum of all
     // bytes in the header block. Each 8-bit byte in the header is added to an
     // unsigned integer, initialized to zero, the precision of which shall be no
     // less than seventeen bits. When calculating the checksum, the chksum field
     // is treated as if it were all blanks.
-    char[8] checksum;               /* 148 */
+    char[8] checksum;
     // Specifies the type of file archived. If a particular implementation does
     // not recognize or permit the specified type, the file will be extracted as
     // if it were a regular file. As this action occurs, tar issues a warning to
     // the standard error.
-    char fileTypeFlag;                /* 156 */
-    char[100] linkedToFilename;           /* 157 */
+    char[1] fileTypeFlag;
+    char[100] linkedToFilename;
     // Indicates that this archive was output in the P1003 archive format. If
     // this field contains `magicString`, the `userName` and `groupName` fields
     // will contain the ASCII representation of the owner and group of the file
     // respectively. If found, the user and group IDs are used rather than the
     // values in the `userId` and `groupId` fields.
-    char[6] magic;                /* 257 */
-    char[2] tarVersion;              /* 263 */
-    char[32] userName;               /* 265 */
-    char[32] groupName;               /* 297 */
-    char[8] deviceMajorNumber;             /* 329 */
-    char[8] deviceMinorNumber;             /* 337 */
-    char[155] prefix;             /* 345 */
-                                  /* 500 */
+    char[6] magic;
+    char[2] tarVersion;
+    char[32] userName;
+    char[32] groupName;
+    char[8] deviceMajorNumber;
+    char[8] deviceMinorNumber;
+    char[155] prefix;
+    char[12] padding;
 };
+
+static assert(TarHeader.sizeof == 512);
 
 const(char)[] magicString = "ustar\0";
 const(char)[] versionString = "00";
@@ -108,23 +110,89 @@ enum FileType : char
 }
 
 /// Bits used in the `TarHeader.mode` field, values in octal.
-enum FileMode : ubyte
+import std.conv : octal;
+enum FileMode : uint
 {
-    // set UID on execution
-    setUid  = 04000,
-    // set GID on execution
-    setGid  = 02000,
+    /// set user ID upon execution
+    setUid  = octal!4000,
+    /// set group ID upon execution
+    setGid  = octal!2000,
+    /// sticky bit
+    restrictedDeletion = octal!1000,
 
-    ownerRead  = 00400,
-    ownerWrite = 00200,
-    ownerExec  = 00100,
+    ownerRead  = octal!400,
+    ownerWrite = octal!200,
+    ownerExec  = octal!100,
 
-    groupRead  = 00040,
-    groupWrite = 00020,
-    groupExec  = 00010,
+    groupRead  = octal!40,
+    groupWrite = octal!20,
+    groupExec  = octal!10,
 
-    otherRead  = 00004,
-    otherWrite = 00002,
-    otherExec  = 00001,
+    otherRead  = octal!4,
+    otherWrite = octal!2,
+    otherExec  = octal!1,
+}
+
+
+class TarException : Exception
+{
+    this(string msg)
+    {
+        super(msg);
+    }
+}
+
+import std.stdio : File, writeln;
+
+struct TarFile
+{
+    static TarFile open(string path, in char[] openMode = "rb")
+    {
+        auto file = File(path, openMode);
+
+        char[TarHeader.sizeof] buffer;
+
+        TarFile tarFile;
+
+        while (!file.eof)
+        {
+            auto headerBytes = file.rawRead(buffer[]);
+            if (headerBytes[0] == '\0')
+            {
+                writeln("End of tar archive.");
+                auto left = file.size() - file.tell();
+                writeln("Padding left: ", left, " bytes, ", left / 512, " blocks from total of ", file.size() / 512);
+                assert(left % 512 == 0);
+                break;
+            }
+            if (headerBytes.length < buffer.length)
+                throw new TarException("Not enough bytes read for tar header.");
+            TarHeader tarHeader;
+
+            foreach (i, ref field; tarHeader.tupleof)
+            {
+                field = headerBytes[0 .. field.sizeof];
+                headerBytes = headerBytes[field.sizeof .. $];
+                writeln(__traits(identifier, tarHeader.tupleof[i]), ": ", field);
+            }
+            import std.conv : parse;
+            auto slice = tarHeader.size[];
+            immutable fileSize = parse!uint(slice, 8);
+            writeln(tarHeader.filename, ": ", fileSize);
+            //writeln("tell: ", file.tell());
+
+            if (fileSize > 0)
+            {
+                // Round up to a multiply of 512 bytes
+                immutable pos = ((file.tell() + fileSize + 511) / 512) * 512;
+                file.seek(pos);
+            }
+            writeln("tell after: ", file.tell());
+            writeln("-----------------------");
+        }
+
+
+        return tarFile;
+    }
 }
 
