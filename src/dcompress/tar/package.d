@@ -48,10 +48,9 @@ struct TarHeader
     char[1] fileTypeFlag;
     char[100] linkedToFilename;
     // Indicates that this archive was output in the P1003 archive format. If
-    // this field contains `magicString`, the `userName` and `groupName` fields
-    // will contain the ASCII representation of the owner and group of the file
-    // respectively. If found, the user and group IDs are used rather than the
-    // values in the `userId` and `groupId` fields.
+    // this field contains `"ustar"` string, the `userName` and `groupName`
+    // fields will contain the ASCII representation of the owner and group of
+    // the file respectively.
     char[6] magic;
     char[2] tarVersion;
     char[32] userName;
@@ -142,6 +141,72 @@ class TarException : Exception
     }
 }
 
+T octalParse(T)(char[] slice)
+{
+    import std.conv : parse;
+    return parse!T(slice, 8);
+}
+
+struct TarMember
+{
+    import std.datetime : SysTime;
+
+    string filename;
+    FileType fileType;
+    size_t size;
+    uint mode;
+    uint userId;
+    uint groupId;
+    string userName;
+    string groupName;
+    uint deviceMajorNumber;
+    uint deviceMinorNumber;
+    SysTime modificationTime;
+
+    this(TarHeader header)
+    {
+        import std.string : fromStringz;
+        filename = fromStringz(header.prefix.ptr).idup;
+        if (filename.length > 0)
+            filename ~= '/';
+        filename ~= fromStringz(header.filename.ptr);
+
+        import std.conv : to;
+        fileType = to!FileType(header.fileTypeFlag[0]);
+
+        size = octalParse!size_t(header.size[]);
+        mode = octalParse!uint(header.mode[]);
+        userId = octalParse!uint(header.userId[]);
+        groupId = octalParse!uint(header.groupId[]);
+
+        userName = fromStringz(header.userName.ptr).idup;
+        groupName = fromStringz(header.groupName.ptr).idup;
+
+        deviceMajorNumber = octalParse!uint(header.deviceMajorNumber[]);
+        deviceMinorNumber = octalParse!uint(header.deviceMinorNumber[]);
+
+        auto unixTime = octalParse!long(header.modificationTime[]);
+        modificationTime = SysTime.fromUnixTime(unixTime);
+    }
+
+    void toString(scope void delegate(const(char)[]) sink)
+    {
+        import std.conv : to;
+        foreach (i, ref field; this.tupleof)
+        {
+            sink(__traits(identifier, this.tupleof[i]));
+            sink(": ");
+            sink(to!string(field));
+            sink("\n");
+        }
+    }
+}
+
+T roundUpToMultiple(T)(T value, T roundValue)
+{
+    return ((value + roundValue - 1) / roundValue) * roundValue;
+}
+
 import std.stdio : File, writeln;
 
 struct TarFile
@@ -159,38 +224,32 @@ struct TarFile
             auto headerBytes = file.rawRead(buffer[]);
             if (headerBytes[0] == '\0')
             {
-                writeln("End of tar archive.");
+                //writeln("End of tar archive.");
                 auto left = file.size() - file.tell();
-                writeln("Padding left: ", left, " bytes, ", left / 512, " blocks from total of ", file.size() / 512);
+                //writeln("Padding left: ", left, " bytes, ", left / 512, " blocks from total of ", file.size() / 512);
                 assert(left % 512 == 0);
                 break;
             }
             if (headerBytes.length < buffer.length)
                 throw new TarException("Not enough bytes read for tar header.");
-            TarHeader tarHeader;
 
+            TarHeader tarHeader;
             foreach (i, ref field; tarHeader.tupleof)
             {
                 field = headerBytes[0 .. field.sizeof];
                 headerBytes = headerBytes[field.sizeof .. $];
-                writeln(__traits(identifier, tarHeader.tupleof[i]), ": ", field);
+                //writeln(__traits(identifier, tarHeader.tupleof[i]), ": ", field);
             }
-            import std.conv : parse;
-            auto slice = tarHeader.size[];
-            immutable fileSize = parse!uint(slice, 8);
-            writeln(tarHeader.filename, ": ", fileSize);
-            //writeln("tell: ", file.tell());
 
-            if (fileSize > 0)
+            auto member = TarMember(tarHeader);
+            writeln("### TarMember\n", member, "-----------------------");
+
+            if (member.size > 0)
             {
-                // Round up to a multiply of 512 bytes
-                immutable pos = ((file.tell() + fileSize + 511) / 512) * 512;
+                immutable pos = (file.tell() + member.size).roundUpToMultiple(512);
                 file.seek(pos);
             }
-            writeln("tell after: ", file.tell());
-            writeln("-----------------------");
         }
-
 
         return tarFile;
     }
