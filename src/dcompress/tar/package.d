@@ -75,7 +75,7 @@ struct TarHeader
     static size_t calculateChecksum(TarHeader header)
     {
         header.checksum[0 .. $] = ' ';
-        auto bytes = cast(ubyte[]) (cast(void*) &header)[0 .. TarHeader.sizeof];
+        auto bytes = cast(ubyte[]) header.asBytes;
         import std.algorithm.iteration : sum;
         return bytes.sum;
     }
@@ -180,6 +180,11 @@ T octalParse(T)(char[] slice)
     return parse!T(slice, 8);
 }
 
+const(void)[] asBytes(T)(auto ref T value)
+{
+    return (cast(void*) &value)[0 .. T.sizeof];
+}
+
 import std.stdio;
 
 struct TarMember
@@ -198,7 +203,7 @@ struct TarMember
     uint deviceMajorNumber;
     uint deviceMinorNumber;
     SysTime modificationTime;
-    ubyte[] content;
+    void[] content;
 
     this(TarHeader header)
     {
@@ -328,6 +333,7 @@ private:
     TarMember[string] _members;
     File _file;
     size_t _endBlocksPos;
+    static enum _blockSize = TarHeader.sizeof;
     size_t _blockingFactor = 20; // number of records per block
 
 public:
@@ -350,8 +356,8 @@ public:
                 writeln("End of tar archive.");
                 auto left = file.size() - tarFile._endBlocksPos;
                 writeln("Padding left: ", left, " bytes, ", left / 512, " blocks from total of ", file.size() / 512);
-                assert(left % 512 == 0);
-                file.seek(0);
+                assert(left % _blockSize == 0);
+                file.rewind();
                 break;
             }
             if (headerBytes.length < buffer.length)
@@ -373,12 +379,13 @@ public:
             auto member = TarMember(tarHeader);
 
 
-             writeln("************************************");
+            // writeln("************************************");
             writeln(toString(tarHeader));
-             writeln("**");
-            writeln(toString(member.toTarHeader));
-            writeln("************************************");
+            // writeln("**");
+            //writeln(toString(member.toTarHeader));
+            //writeln("************************************");
             writeln("### TarMember\n", member, "-----------------------");
+            
             //assert(tarHeader == member.toTarHeader);
             assert(TarHeader.calculateChecksum(tarHeader) == TarHeader.calculateChecksum(member.toTarHeader));
 
@@ -387,7 +394,7 @@ public:
                 member.content = new ubyte[member.size];
                 file.rawRead(member.content);
 
-                immutable pos = file.tell().roundUpToMultiple(512);
+                immutable pos = file.tell().roundUpToMultiple(_blockSize);
                 file.seek(pos);
             }
 
@@ -397,7 +404,7 @@ public:
         return tarFile;
     }
 
-    void add(bool recursive = true, alias filter = (TarMember member) => true)(string filePath)
+    void add(bool recursive = true, alias filter = (TarMember member) => true)(string file)
     {
         static if (!isPredicate!TarMember)
             assert(false, "'filter' should be a predicate taking TarMember as an argument.");
@@ -409,6 +416,32 @@ public:
     {
         _members[member.filename] = member;
 
+        auto header = member.toTarHeader();
+        _file.reopen(null, "rb+"); // Reopen for write
+        _file.seek(_endBlocksPos);
+        _file.rawWrite(header.asBytes);
+        if (member.content.length > 0)
+            _file.rawWrite(member.content);
+
+        version (Posix)
+        {
+            import core.sys.posix.unistd : ftruncate;
+            alias resize = ftruncate;
+        }
+        else version (Windows)
+        {
+            //import etc.core.sys.windows.
+            alias resize = chsize_s;
+        }
+
+        auto size = _file.size.roundUpToMultiple(_blockingFactor * _blockSize);
+        writeln("Size: ", size);
+        auto status = resize(_file.fileno, size);
+        assert(status == 0);
+    }
+
+    void remove(string file)
+    {
 
     }
 }

@@ -114,7 +114,23 @@ void bz2()
 void testTar()
 {
     import dcompress.tar;
-    TarFile.open("lib.tar");
+    auto tar = TarFile.open("lib.tar");
+    TarMember member;
+    member.filename = "lib/lalala.txt";
+    //member.linkedToFilename =
+    member.fileType = FileType.regular;
+    member.content = cast(void[]) "lalala";
+    member.size = member.content.length;
+    member.mode = 420;
+    member.userId = 1000;
+    member.groupId = 1000;
+    member.userName = "byebye";
+    member.groupName = "byebye";
+    member.deviceMajorNumber = 0;
+    member.deviceMinorNumber = 0;
+    import std.datetime : SysTime;
+    member.modificationTime = SysTime.fromUnixTime(13106354744);
+    //tar.add(member);
 }
 
 void main() {
