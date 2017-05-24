@@ -347,7 +347,7 @@ T roundUpToMultiple(T)(T value, T roundValue)
     return ((value + roundValue - 1) / roundValue) * roundValue;
 }
 
-enum isPredicate(T) = __traits(compiles, () { if (filter(T.init)) {} });
+enum isPredicate(alias pred, T) = __traits(compiles, (T t) { if (pred(t)) {} });
 
 struct FileStat
 {
@@ -553,20 +553,20 @@ public:
             }
 
 
-            writeln(cast(void[]) tarHeader.checksum[]);
-            writeln("checksum: ", octalParse!uint(tarHeader.checksum),
-                " vs calculated: ", TarHeader.calculateChecksum(tarHeader));
+            //writeln(cast(void[]) tarHeader.checksum[]);
+            //writeln("checksum: ", octalParse!uint(tarHeader.checksum),
+            //    " vs calculated: ", TarHeader.calculateChecksum(tarHeader));
 
             auto member = TarMember(tarHeader);
 
 
             // writeln("************************************");
-            writeln(toString(tarHeader));
+            //writeln(toString(tarHeader));
             // writeln("**");
             //writeln(toString(member.toTarHeader));
             //writeln("************************************");
             writeln("### TarMember\n", member, "-----------------------");
-            
+
             //assert(tarHeader == member.toTarHeader);
             assert(TarHeader.calculateChecksum(tarHeader) == TarHeader.calculateChecksum(member.toTarHeader));
 
@@ -585,16 +585,77 @@ public:
         return tarFile;
     }
 
-    void add(bool recursive = true, alias filter = (TarMember member) => true)(string file)
+    void add(alias memberFilter = (TarMember member) => true)(string filename, bool recursive = true)
     {
-        static if (!isPredicate!TarMember)
+        static if (!isPredicate!(memberFilter, TarMember))
             assert(false, "'filter' should be a predicate taking TarMember as an argument.");
 
+        import std.file : exists;
+        if (!exists(filename))
+            throw new TarException("File '" ~ filename ~ "' does not exist.");
 
+        import std.file : dirEntries;
+        import std.traits : ReturnType;
+
+        ReturnType!dirEntries entries;
+
+        import std.file : isDir;
+        if (recursive && isDir(filename))
+        {
+            import std.file : SpanMode;
+            entries = dirEntries(filename, SpanMode.breadth);
+        }
+
+        import std.algorithm.iteration : map, filter, each;
+        import std.range : only, chain;
+
+        only(filename).chain(entries)
+            .map!(name => fileToTarMember(name))
+            .filter!(member => memberFilter(member))
+            .each!(member => add(member));
+    }
+
+    private TarMember fileToTarMember(string filename)
+    {
+        auto stat = FileStat(filename);
+
+        TarMember member;
+        member.filename = filename;
+        member.fileType = stat.fileType();
+        if (member.fileType == FileType.symbolicLink)
+        {
+            import std.file : readLink;
+            member.linkedToFilename = readLink(filename);
+        }
+        else if (member.fileType != FileType.directory)
+        {
+            member.size = stat.size();
+        }
+        member.userId = stat.userId();
+        member.groupId = stat.groupId();
+        member.userName = stat.userName();
+        member.groupName = stat.groupName();
+        member.mode = stat.mode();
+        if (member.fileType == FileType.characterSpecial || member.fileType == FileType.blockSpecial)
+        {
+            member.deviceMajorNumber = stat.deviceMajorNumber;
+            member.deviceMinorNumber = stat.deviceMinorNumber;
+        }
+        import std.datetime : SysTime;
+        member.modificationTime = SysTime.fromUnixTime(stat.modificationTime);
+
+        if (member.size > 0)
+        {
+            import std.file : read;
+            member.content = read(filename);
+        }
+
+        return member;
     }
 
     void add(TarMember member)
     {
+        writeln("Adding: ", member.filename);
         _members[member.filename] = member;
 
         auto header = member.toTarHeader();
@@ -603,21 +664,22 @@ public:
         _file.rawWrite(header.asBytes);
         if (member.content.length > 0)
             _file.rawWrite(member.content);
-
+        _endBlocksPos = _file.tell().roundUpToMultiple(_blockSize);
         version (Posix)
         {
             import core.sys.posix.unistd : ftruncate;
-            alias resize = ftruncate;
+            alias resizeFile = ftruncate;
         }
-        else version (Windows)
-        {
-            //import etc.core.sys.windows.
-            alias resize = chsize_s;
-        }
+        //else version (Windows)
+        //{
+        //    import core.sys.windows.
+        //    extern (C) int _chsize_s(int fd, long size);
+        //    alias resizeFile = _chsize_s;
+        //}
 
         auto size = _file.size.roundUpToMultiple(_blockingFactor * _blockSize);
         writeln("Size: ", size);
-        auto status = resize(_file.fileno, size);
+        auto status = resizeFile(_file.fileno, size);
         assert(status == 0);
     }
 

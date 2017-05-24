@@ -114,7 +114,7 @@ void bz2()
 void testTar()
 {
     import dcompress.tar;
-    auto tar = TarFile.open("lib.tar");
+    auto tar = TarFile.open("tar_ex.tar");
     TarMember member;
     member.filename = "lib/lalala.txt";
     //member.linkedToFilename =
@@ -131,10 +131,28 @@ void testTar()
     import std.datetime : SysTime;
     member.modificationTime = SysTime.fromUnixTime(13106354744);
     //tar.add(member);
+    auto stat = FileStat("lib");
+    writeln("GROUP: ", stat.groupName());
+    writeln("USER: ", stat.userName());
+    writefln("MODE: %o", stat.mode());
+    writefln("Size: %d", stat.size());
+}
+
+void testTarAddRecursive()
+{
+    import dcompress.tar;
+    auto tar = TarFile.open("empty.tar");
+    tar.add("tar_ex/");
 }
 
 void main() {
     //testBz2();
     //bz2();
-    testTar();
+    //testTar();
+    testTarAddRecursive();
+    //import std.file : dirEntries, SpanMode;
+    //foreach (string name; dirEntries("README.md", SpanMode.breadth))
+    //{
+    //    writeln(name);
+    //}
 }
