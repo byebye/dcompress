@@ -117,15 +117,16 @@ enum FileType : char
     // This specifies a FIFO special file. Note that the archiving of a FIFO
     // file archives the existence of this file and not its contents.
     fifoSpecial = '6',
-    // This specifies a contiguous file, which is the same as a normal file
-    // except that, in operating systems which support it, all its space is
-    // allocated contiguously on the disk. Operating systems which do not allow
-    // contiguous allocation should silently treat this type as a normal file.
-    contiguous = '7',
-    // Extended header referring to the next file in the archive.
-    extendedHeaderNext = 'x',
-    // Global extended header
-    extendedHeaderGlobal = 'g',
+
+    //// This specifies a contiguous file, which is the same as a normal file
+    //// except that, in operating systems which support it, all its space is
+    //// allocated contiguously on the disk. Operating systems which do not allow
+    //// contiguous allocation should silently treat this type as a normal file.
+    //contiguous = '7',
+    //// Extended header referring to the next file in the archive.
+    //extendedHeaderNext = 'x',
+    //// Global extended header
+    //extendedHeaderGlobal = 'g',
 }
 
 string toString(T)(auto ref T value)
@@ -143,26 +144,51 @@ string toString(T)(auto ref T value)
 /// Bits used in the `TarHeader.mode` field, values in octal.
 struct FileMode
 {
-    alias siUint = static immutable(uint);
+    alias iuint = immutable(uint);
     import std.conv : octal;
     /// set user ID upon execution
-    siUint setUid  = octal!4000;
+    static iuint setUid  = octal!4000;
     /// set group ID upon execution
-    siUint setGid  = octal!2000;
+    static iuint setGid  = octal!2000;
     /// sticky bit
-    siUint restrictedDeletion = octal!1000;
+    static iuint restrictedDeletion = octal!1000;
 
-    siUint ownerRead  = octal!400;
-    siUint ownerWrite = octal!200;
-    siUint ownerExec  = octal!100;
+    static iuint ownerRead  = octal!400;
+    static iuint ownerWrite = octal!200;
+    static iuint ownerExec  = octal!100;
 
-    siUint groupRead  = octal!40;
-    siUint groupWrite = octal!20;
-    siUint groupExec  = octal!10;
+    static iuint groupRead  = octal!40;
+    static iuint groupWrite = octal!20;
+    static iuint groupExec  = octal!10;
 
-    siUint otherRead  = octal!4;
-    siUint otherWrite = octal!2;
-    siUint otherExec  = octal!1;
+    static iuint otherRead  = octal!4;
+    static iuint otherWrite = octal!2;
+    static iuint otherExec  = octal!1;
+}
+
+unittest
+{
+    import core.sys.posix.sys.stat;
+    //writefln("S: %o %o %o", S_ISUID, S_ISGID, S_ISVTX);
+    //writefln("U: %o %o %o %o", S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR);
+    //writefln("G: %o %o %o %o", S_IRWXG, S_IRGRP, S_IWGRP, S_IXGRP);
+    //writefln("O: %o %o %o %o", S_IRWXO, S_IROTH, S_IWOTH, S_IXOTH);
+
+    assert(FileMode.setUid == S_ISUID);
+    assert(FileMode.setGid == S_ISGID);
+    assert(FileMode.restrictedDeletion == S_ISVTX);
+
+    assert(FileMode.ownerRead == S_IRUSR);
+    assert(FileMode.ownerWrite == S_IWUSR);
+    assert(FileMode.ownerExec == S_IXUSR);
+
+    assert(FileMode.groupRead == S_IRGRP);
+    assert(FileMode.groupWrite == S_IWGRP);
+    assert(FileMode.groupExec == S_IXGRP);
+
+    assert(FileMode.otherRead == S_IROTH);
+    assert(FileMode.otherWrite == S_IWOTH);
+    assert(FileMode.otherExec == S_IXOTH);
 }
 
 
@@ -323,6 +349,161 @@ T roundUpToMultiple(T)(T value, T roundValue)
 
 enum isPredicate(T) = __traits(compiles, () { if (filter(T.init)) {} });
 
+struct FileStat
+{
+    import core.sys.posix.sys.stat;
+    import std.string : fromStringz;
+
+    stat_t _stat;
+
+    @disable this();
+
+    this(string filename)
+    {
+        import std.string : toStringz;
+        lstat(filename.toStringz, &_stat);
+        //pragma(msg, typeof(_stat.st_dev).stringof);
+        //pragma(msg, typeof(_stat.st_ino).stringof);
+        //pragma(msg, typeof(_stat.st_mode).stringof);
+        //pragma(msg, typeof(_stat.st_nlink).stringof);
+        //pragma(msg, "uid " ~ typeof(_stat.st_uid).stringof);
+        //pragma(msg, typeof(_stat.st_gid).stringof);
+        //pragma(msg, typeof(_stat.st_rdev).stringof);
+        //pragma(msg, typeof(_stat.st_size).stringof);
+        //pragma(msg, typeof(_stat.st_atime).stringof);
+        //pragma(msg, "block size " ~ typeof(_stat.st_blksize).stringof);
+        //pragma(msg, typeof(_stat.st_blocks).stringof);
+    }
+
+    /// Type of the file.
+    FileType fileType()
+    {
+        // TODO Hard links: https://unix.stackexchange.com/questions/43037/dereferencing-hard-links
+        immutable(uint) attrs = _stat.st_mode;
+        immutable fileTypeMask = (attrs & S_IFMT);
+        switch (fileTypeMask)
+        {
+            case S_IFREG: return FileType.regular;
+            case S_IFDIR: return FileType.directory;
+            case S_IFLNK: return FileType.symbolicLink;
+            case S_IFBLK: return FileType.blockSpecial;
+            case S_IFCHR: return FileType.characterSpecial;
+            case S_IFIFO: return FileType.fifoSpecial;
+            default: assert(0, "Unsupported file type.");
+        }
+    }
+
+    /// Number of hard links to the file.
+    ulong hardLinksCount() const
+    {
+        return _stat.st_nlink;
+    }
+
+    /// User ID of file.
+    uint userId() const
+    {
+        return _stat.st_uid;
+    }
+
+    /// User name of file.
+    string userName() const
+    {
+        import core.sys.posix.pwd : passwd, getpwuid_r;
+        //import core.sys.posix.unistd : sysconf, _SC_GETPW_R_SIZE_MAX;
+        //immutable size = sysconf(_SC_GETPW_R_SIZE_MAX);
+        //assert(size != -1);
+        //writeln("SIZE: ", size);
+        char[1024] buffer = void;
+        passwd pwd;
+        passwd* result;
+        getpwuid_r(groupId(), &pwd, buffer.ptr, buffer.length, &result);
+        assert(result != null);
+        return fromStringz(result.pw_name).idup;
+    }
+
+    /// Group ID of file.
+    uint groupId() const
+    {
+        return _stat.st_gid;
+    }
+
+    /// File mode - permissions, setgid, setuid and sticky bit.
+    uint mode() const
+    {
+        static immutable mask =
+            (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO);
+        return _stat.st_mode;
+    }
+
+    /// Group name of file.
+    string groupName() const
+    {
+        import core.sys.posix.grp : group, getgrgid_r;
+        //import core.sys.posix.unistd : sysconf, _SC_GETGR_R_SIZE_MAX;
+        //immutable size = sysconf(_SC_GETGR_R_SIZE_MAX);
+        //assert(size != -1);
+        //writeln("SIZE: ", size);
+        char[1024] buffer = void;
+        group grp;
+        group* result;
+        getgrgid_r(groupId(), &grp, buffer.ptr, buffer.length, &result);
+        assert(result != null);
+        return fromStringz(result.gr_name).idup;
+    }
+
+    /// For regular files, the file size in bytes. For symbolic links, the
+    /// length in bytes of the pathname contained in the symbolic link.
+    ulong size() const
+    {
+        return _stat.st_size;
+    }
+
+    private static immutable(uint) minorBits = 20;
+    private static immutable(uint) minorMask = ((1U << minorBits) - 1);
+
+    /// Device ID major number (if file is character or block special).
+    uint deviceMajorNumber() const
+    {
+        return cast(uint) ((_stat.st_rdev) >> minorBits);
+    }
+
+    /// Device ID minor number (if file is character or block special).
+    uint deviceMinorNumber() const
+    {
+        return ((_stat.st_rdev) & minorMask);
+    }
+
+    /// Time of last access.
+    long accessTime() const
+    {
+        return _stat.st_atime;
+    }
+
+    /// Time of last data modification.
+    long modificationTime() const
+    {
+        return _stat.st_mtime;
+    }
+
+    /// Time of last status change.
+    long statusChangeTime() const
+    {
+        return _stat.st_ctime;
+    }
+
+    /// A file system-specific preferred I/O block size for this object. In some
+    /// file system types, this may vary from file to file.
+    long blockSize() const
+    {
+        return _stat.st_blksize;
+    }
+
+    /// Number of blocks allocated for this object.
+    long blockCount() const
+    {
+        return _stat.st_blocks;
+    }
+}
 
 struct TarFile
 {
