@@ -114,7 +114,7 @@ void bz2()
 void testTar()
 {
     import dcompress.tar;
-    auto tar = TarFile.open("tar_ex.tar");
+    auto tar = TarFile.open("tests/tar_ex.tar");
     TarMember member;
     member.filename = "lib/lalala.txt";
     //member.linkedToFilename =
@@ -141,8 +141,8 @@ void testTar()
 void testTarAddRecursive()
 {
     import dcompress.tar;
-    auto tar = TarFile.open("empty.tar");
-    tar.add("tar_ex/");
+    auto tar = TarFile.open("tests/empty.tar");
+    tar.add("tests/tar_ex/");
 }
 
 void main() {
@@ -150,9 +150,4 @@ void main() {
     //bz2();
     //testTar();
     testTarAddRecursive();
-    //import std.file : dirEntries, SpanMode;
-    //foreach (string name; dirEntries("README.md", SpanMode.breadth))
-    //{
-    //    writeln(name);
-    //}
 }

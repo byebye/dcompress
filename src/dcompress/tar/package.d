@@ -3,6 +3,13 @@
  +/
 module dcompress.tar;
 
+debug = tar;
+
+debug(tar)
+{
+    import std.stdio;
+}
+
 // tar Header Block, from POSIX 1003.1-1990.
 
 void assignAndZeroTrailing(size_t N)(ref char[N] arr, string s)
@@ -362,17 +369,6 @@ struct FileStat
     {
         import std.string : toStringz;
         lstat(filename.toStringz, &_stat);
-        //pragma(msg, typeof(_stat.st_dev).stringof);
-        //pragma(msg, typeof(_stat.st_ino).stringof);
-        //pragma(msg, typeof(_stat.st_mode).stringof);
-        //pragma(msg, typeof(_stat.st_nlink).stringof);
-        //pragma(msg, "uid " ~ typeof(_stat.st_uid).stringof);
-        //pragma(msg, typeof(_stat.st_gid).stringof);
-        //pragma(msg, typeof(_stat.st_rdev).stringof);
-        //pragma(msg, typeof(_stat.st_size).stringof);
-        //pragma(msg, typeof(_stat.st_atime).stringof);
-        //pragma(msg, "block size " ~ typeof(_stat.st_blksize).stringof);
-        //pragma(msg, typeof(_stat.st_blocks).stringof);
     }
 
     /// Type of the file.
@@ -412,7 +408,6 @@ struct FileStat
         //import core.sys.posix.unistd : sysconf, _SC_GETPW_R_SIZE_MAX;
         //immutable size = sysconf(_SC_GETPW_R_SIZE_MAX);
         //assert(size != -1);
-        //writeln("SIZE: ", size);
         char[1024] buffer = void;
         passwd pwd;
         passwd* result;
@@ -442,7 +437,6 @@ struct FileStat
         //import core.sys.posix.unistd : sysconf, _SC_GETGR_R_SIZE_MAX;
         //immutable size = sysconf(_SC_GETGR_R_SIZE_MAX);
         //assert(size != -1);
-        //writeln("SIZE: ", size);
         char[1024] buffer = void;
         group grp;
         group* result;
@@ -507,7 +501,7 @@ struct FileStat
 
 struct TarFile
 {
-    import std.stdio : File, writeln;
+    import std.stdio : File;
 
 private:
 
@@ -534,9 +528,13 @@ public:
             if (headerBytes[0] == '\0')
             {
                 tarFile._endBlocksPos = file.tell() - TarHeader.sizeof;
-                writeln("End of tar archive.");
                 auto left = file.size() - tarFile._endBlocksPos;
-                writeln("Padding left: ", left, " bytes, ", left / 512, " blocks from total of ", file.size() / 512);
+                debug(tar)
+                {
+                    writeln("End of tar archive.");
+                    writefln("Padding: %d bytes = %d blocks from total of %d", 
+                        left, left / _blockSize, file.size() / _blockSize);
+                }
                 assert(left % _blockSize == 0);
                 file.rewind();
                 break;
@@ -549,26 +547,15 @@ public:
             {
                 field = headerBytes[0 .. field.sizeof];
                 headerBytes = headerBytes[field.sizeof .. $];
-                //writeln(__traits(identifier, tarHeader.tupleof[i]), ": '", field, "'");
             }
-
-
-            //writeln(cast(void[]) tarHeader.checksum[]);
-            //writeln("checksum: ", octalParse!uint(tarHeader.checksum),
-            //    " vs calculated: ", TarHeader.calculateChecksum(tarHeader));
 
             auto member = TarMember(tarHeader);
 
-
-            // writeln("************************************");
-            //writeln(toString(tarHeader));
-            // writeln("**");
-            //writeln(toString(member.toTarHeader));
-            //writeln("************************************");
             writeln("### TarMember\n", member, "-----------------------");
 
-            //assert(tarHeader == member.toTarHeader);
-            assert(TarHeader.calculateChecksum(tarHeader) == TarHeader.calculateChecksum(member.toTarHeader));
+            assert(tarHeader == member.toTarHeader);
+            assert(TarHeader.calculateChecksum(tarHeader) == 
+                TarHeader.calculateChecksum(member.toTarHeader));
 
             if (member.size > 0)
             {
@@ -655,7 +642,8 @@ public:
 
     void add(TarMember member)
     {
-        writeln("Adding: ", member.filename);
+        debug(tar) writeln("Adding file to tar: ", member.filename);
+
         _members[member.filename] = member;
 
         auto header = member.toTarHeader();
@@ -678,7 +666,6 @@ public:
         //}
 
         auto size = _file.size.roundUpToMultiple(_blockingFactor * _blockSize);
-        writeln("Size: ", size);
         auto status = resizeFile(_file.fileno, size);
         assert(status == 0);
     }
