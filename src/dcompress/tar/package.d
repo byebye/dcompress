@@ -276,7 +276,7 @@ struct TarMember
 
         string withTrailingSlash(string path)
         {
-            if (path.length == 0 || path == "/")
+            if (path.length == 0 || path[$ - 1] == '/')
                 return path;
             return path ~= "/";
         }
@@ -356,6 +356,19 @@ T roundUpToMultiple(T)(T value, T roundValue)
 
 enum isPredicate(alias pred, T) = __traits(compiles, (T t) { if (pred(t)) {} });
 
+static void enforceSuccess(int status)
+{
+    if (status == 0)
+        return;
+
+    import std.string : fromStringz;
+    import core.stdc.string : strerror;
+    import core.stdc.errno;
+
+    string msg = fromStringz(strerror(errno)).idup;
+    throw new TarException(msg);
+}
+
 struct FileStat
 {
     import core.sys.posix.sys.stat;
@@ -368,7 +381,12 @@ struct FileStat
     this(string filename)
     {
         import std.string : toStringz;
-        lstat(filename.toStringz, &_stat);
+        this(filename.toStringz);
+    }
+
+    this(const(char)* filename)
+    {
+        lstat(filename, &_stat);
     }
 
     /// Type of the file.
@@ -427,7 +445,7 @@ struct FileStat
     {
         static immutable mask =
             (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO);
-        return _stat.st_mode;
+        return _stat.st_mode & mask;
     }
 
     /// Group name of file.
@@ -454,6 +472,31 @@ struct FileStat
 
     private static immutable(uint) minorBits = 20;
     private static immutable(uint) minorMask = ((1U << minorBits) - 1);
+
+    static uint makeDeviceNumber(uint major, uint minor)
+    {
+        return (major << minorBits) | minor;
+    }
+
+    static uint fileTypeMode(FileType fileType)
+    {
+        final switch (fileType)
+        {
+            case FileType.regular: return S_IFREG;
+            case FileType.regularCompatibility: return S_IFREG;
+            case FileType.hardLink: return S_IFREG;
+            case FileType.directory: return S_IFDIR;
+            case FileType.symbolicLink: return S_IFLNK;
+            case FileType.blockSpecial: return S_IFBLK;
+            case FileType.characterSpecial: return S_IFCHR;
+            case FileType.fifoSpecial: return S_IFIFO;
+        }
+    }
+
+    static uint posixFileMode(uint mode, FileType fileType)
+    {
+        return mode | FileStat.fileTypeMode(fileType);
+    }
 
     /// Device ID major number (if file is character or block special).
     uint deviceMajorNumber() const
@@ -532,7 +575,7 @@ public:
                 debug(tar)
                 {
                     writeln("End of tar archive.");
-                    writefln("Padding: %d bytes = %d blocks from total of %d", 
+                    writefln("Padding: %d bytes = %d blocks from total of %d",
                         left, left / _blockSize, file.size() / _blockSize);
                 }
                 assert(left % _blockSize == 0);
@@ -551,10 +594,14 @@ public:
 
             auto member = TarMember(tarHeader);
 
-            writeln("### TarMember\n", member, "-----------------------");
+            //writeln("### TarMember\n", member, "-----------------------");
 
-            assert(tarHeader == member.toTarHeader);
-            assert(TarHeader.calculateChecksum(tarHeader) == 
+            //writeln("-------");
+            //writeln(tarHeader.filename);
+            //writeln(member.toTarHeader.filename);
+            //writeln("-------");
+
+            assert(TarHeader.calculateChecksum(tarHeader) ==
                 TarHeader.calculateChecksum(member.toTarHeader));
 
             if (member.size > 0)
@@ -673,6 +720,84 @@ public:
     void remove(string file)
     {
 
+    }
+
+    void extract(string memberFilename, string destPath = ".")
+    {
+        extract(_members[memberFilename], destPath);
+    }
+
+    static void extract(TarMember member, string destPath = ".")
+    {
+        if (destPath.length == 0)
+            destPath = ".";
+
+        import std.path : isValidPath, exists, isDir, buildPath;
+        if (!isValidPath(destPath) || (exists(destPath) && !isDir(destPath)))
+            throw new TarException("Invalid destination path: '" ~ destPath ~ "'");
+
+        import std.path : dirName, baseName;
+        import std.file : write, mkdirRecurse;
+
+        immutable fullPath = buildPath(destPath, member.filename);
+        destPath = buildPath(destPath, dirName(member.filename));
+
+        if (exists(fullPath))
+            return;
+
+        mkdirRecurse(destPath);
+
+        debug(tar) writeln("Destination: ", fullPath);
+
+        import std.string : toStringz;
+        immutable fullPathC = fullPath.toStringz;
+
+        if (member.fileType == FileType.directory)
+        {
+            import core.sys.posix.sys.stat : mkdir;
+            mkdir(fullPathC, member.mode).enforceSuccess;
+        }
+        else if (member.fileType == FileType.symbolicLink)
+        {
+            import core.sys.posix.unistd : symlink;
+            symlink(member.linkedToFilename.toStringz, fullPathC).enforceSuccess;
+        }
+        else
+        {
+            immutable mode = FileStat.posixFileMode(member.mode, member.fileType);
+            immutable devNumber = FileStat.makeDeviceNumber(
+                member.deviceMajorNumber, member.deviceMinorNumber);
+
+            import core.sys.posix.sys.stat : mknod;
+            mknod(fullPathC, mode, devNumber).enforceSuccess;
+        }
+
+        if (member.size > 0)
+        {
+            write(fullPath, member.content);
+        }
+
+        import core.sys.posix.unistd : lchown;
+        lchown(fullPathC, member.userId, member.groupId).enforceSuccess;
+
+        auto stat = FileStat(fullPath);
+
+        import core.sys.posix.sys.time;
+        import core.sys.posix.sys.stat : utimensat;
+
+        timespec[2] newTime;
+        newTime[0].tv_sec = stat.accessTime();
+        newTime[1].tv_sec = member.modificationTime.toUnixTime();
+
+        import core.sys.posix.fcntl : AT_FDCWD, AT_SYMLINK_NOFOLLOW;
+
+        utimensat(AT_FDCWD, fullPathC, newTime, AT_SYMLINK_NOFOLLOW).enforceSuccess;
+    }
+
+    void extractAll(string destPath = ".")
+    {
+        import std.algorithm.iteration :  each;
+        _members.byValue.each!(member => extract(member, destPath));
     }
 }
 

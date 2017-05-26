@@ -145,9 +145,17 @@ void testTarAddRecursive()
     tar.add("tests/tar_ex/");
 }
 
+void testTarExtract()
+{
+    import dcompress.tar;
+    auto tar = TarFile.open("tests/tar_ex.tar");
+    tar.extractAll("out2/");
+}
+
 void main() {
     //testBz2();
     //bz2();
     //testTar();
-    testTarAddRecursive();
+    //testTarAddRecursive();
+    testTarExtract();
 }
