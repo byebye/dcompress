@@ -227,7 +227,6 @@ struct TarMember
     string filename;
     string linkedToFilename;
     FileType fileType;
-    size_t size;
     uint mode;
     uint userId;
     uint groupId;
@@ -237,6 +236,11 @@ struct TarMember
     uint deviceMinorNumber;
     SysTime modificationTime;
     void[] content;
+
+    @property size_t size() const
+    {
+        return content.length;
+    }
 
     this(TarHeader header)
     {
@@ -253,7 +257,6 @@ struct TarMember
         import std.conv : to;
         fileType = to!FileType(header.fileTypeFlag[0]);
 
-        size = octalParse!size_t(header.size[]);
         mode = octalParse!uint(header.mode[]);
         userId = octalParse!uint(header.userId[]);
         groupId = octalParse!uint(header.groupId[]);
@@ -661,10 +664,6 @@ public:
             import std.file : readLink;
             member.linkedToFilename = readLink(filename);
         }
-        else if (member.fileType != FileType.directory)
-        {
-            member.size = stat.size();
-        }
         member.userId = stat.userId();
         member.groupId = stat.groupId();
         member.userName = stat.userName();
@@ -678,7 +677,7 @@ public:
         import std.datetime : SysTime;
         member.modificationTime = SysTime.fromUnixTime(stat.modificationTime);
 
-        if (member.size > 0)
+        if (member.fileType != FileType.directory && stat.size() > 0)
         {
             import std.file : read;
             member.content = read(filename);
