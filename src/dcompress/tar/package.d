@@ -607,9 +607,10 @@ public:
             assert(TarHeader.calculateChecksum(tarHeader) ==
                 TarHeader.calculateChecksum(member.toTarHeader));
 
-            if (member.size > 0)
+            immutable fileSize = octalParse!size_t(header.size[]);;
+            if (fileSize > 0)
             {
-                member.content = new ubyte[member.size];
+                member.content = new ubyte[fileSize];
                 file.rawRead(member.content);
 
                 immutable pos = file.tell().roundUpToMultiple(_blockSize);
