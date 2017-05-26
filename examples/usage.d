@@ -119,8 +119,8 @@ void testTar()
     member.filename = "lib/lalala.txt";
     //member.linkedToFilename =
     member.fileType = FileType.regular;
-    member.content = cast(void[]) "lalala";
-    member.size = member.content.length;
+    //member.content = cast(void[]) "lalala";
+    //member.size = member.content.length;
     member.mode = 420;
     member.userId = 1000;
     member.groupId = 1000;

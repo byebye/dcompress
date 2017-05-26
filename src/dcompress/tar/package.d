@@ -213,7 +213,7 @@ T octalParse(T)(char[] slice)
     return parse!T(slice, 8);
 }
 
-const(void)[] asBytes(T)(auto ref T value)
+const(void)[] asBytes(T)(ref T value)
 {
     return (cast(void*) &value)[0 .. T.sizeof];
 }
@@ -226,6 +226,7 @@ struct TarMember
 
     string filename;
     string linkedToFilename;
+    size_t size;
     FileType fileType;
     uint mode;
     uint userId;
@@ -235,12 +236,6 @@ struct TarMember
     uint deviceMajorNumber;
     uint deviceMinorNumber;
     SysTime modificationTime;
-    void[] content;
-
-    @property size_t size() const
-    {
-        return content.length;
-    }
 
     this(TarHeader header)
     {
@@ -257,6 +252,7 @@ struct TarMember
         import std.conv : to;
         fileType = to!FileType(header.fileTypeFlag[0]);
 
+        size = octalParse!size_t(header.size[]);
         mode = octalParse!uint(header.mode[]);
         userId = octalParse!uint(header.userId[]);
         groupId = octalParse!uint(header.groupId[]);
@@ -337,6 +333,23 @@ struct TarMember
         header.checksum[$ - 1] = ' ';
 
         return header;
+    }
+
+    static void[] asTarBytes(TarMember member, void[] content)
+    in
+    {
+        assert(member.size == content.length);
+    }
+    body
+    {
+        immutable blockSize = TarHeader.sizeof;
+        immutable size = (blockSize + member.size).roundUpToMultiple(blockSize);
+        auto buf = new ubyte[size];
+        auto header = member.toTarHeader();
+        import std.algorithm.mutation : copy;
+        auto bufRem = copy(cast(ubyte[]) header.asBytes, buf);
+        copy(cast(ubyte[]) content, bufRem);
+        return buf;
     }
 
     void toString(scope void delegate(const(char)[]) sink)
@@ -548,10 +561,13 @@ struct FileStat
 struct TarFile
 {
     import std.stdio : File;
+    import std.typecons : Tuple;
+    alias MemberWithPosition = Tuple!(TarMember, "member", size_t, "position");
 
 private:
 
-    TarMember[string] _members;
+    MemberWithPosition[string] _members;
+
     File _file;
     size_t _endBlocksPos;
     static enum _blockSize = TarHeader.sizeof;
@@ -607,23 +623,54 @@ public:
             assert(TarHeader.calculateChecksum(tarHeader) ==
                 TarHeader.calculateChecksum(member.toTarHeader));
 
-            immutable fileSize = octalParse!size_t(header.size[]);;
-            if (fileSize > 0)
-            {
-                member.content = new ubyte[fileSize];
-                file.rawRead(member.content);
+            size_t position = file.tell();
 
-                immutable pos = file.tell().roundUpToMultiple(_blockSize);
+            if (member.size > 0)
+            {
+                //auto content = new ubyte[fileSize];
+                //file.rawRead(content);
+
+                immutable pos = (file.tell() + member.size)
+                    .roundUpToMultiple(_blockSize);
                 file.seek(pos);
             }
 
-            tarFile._members[member.filename] = member;
+            tarFile._members[member.filename] = MemberWithPosition(member, position);
         }
 
         return tarFile;
     }
 
-    void add(alias memberFilter = (TarMember member) => true)(string filename, bool recursive = true)
+    @property size_t size()
+    {
+        return _file.size();
+    }
+
+    private void[] readContentAt(size_t pos, size_t size)
+    {
+        void[] buf = new ubyte[size];
+
+        immutable prevPos = _file.tell();
+        _file.seek(pos);
+        _file.rawRead(buf);
+        _file.seek(prevPos);
+
+        return buf;
+    }
+
+    void[] readMemberContent(string filename)
+    {
+        auto mp = (filename in _members);
+        assert(mp !is null);
+
+        if (mp.member.size == 0)
+            return null;
+
+        return readContentAt(mp.position, mp.member.size);
+    }
+
+    void add(alias memberFilter = (TarMember member) => true)(
+        string filename, bool recursive = true)
     {
         static if (!isPredicate!(memberFilter, TarMember))
             assert(false, "'filter' should be a predicate taking TarMember as an argument.");
@@ -650,7 +697,7 @@ public:
         only(filename).chain(entries)
             .map!(name => fileToTarMember(name))
             .filter!(member => memberFilter(member))
-            .each!(member => add(member));
+            .each!(member => addReadContent(member));
     }
 
     private TarMember fileToTarMember(string filename)
@@ -670,7 +717,8 @@ public:
         member.userName = stat.userName();
         member.groupName = stat.groupName();
         member.mode = stat.mode();
-        if (member.fileType == FileType.characterSpecial || member.fileType == FileType.blockSpecial)
+        if (member.fileType == FileType.characterSpecial ||
+            member.fileType == FileType.blockSpecial)
         {
             member.deviceMajorNumber = stat.deviceMajorNumber;
             member.deviceMinorNumber = stat.deviceMinorNumber;
@@ -678,27 +726,80 @@ public:
         import std.datetime : SysTime;
         member.modificationTime = SysTime.fromUnixTime(stat.modificationTime);
 
-        if (member.fileType != FileType.directory && stat.size() > 0)
-        {
-            import std.file : read;
-            member.content = read(filename);
-        }
-
         return member;
     }
 
-    void add(TarMember member)
+    void addReadContent(TarMember member)
+    {
+        if (member.fileType != FileType.directory && member.size > 0)
+        {
+           auto sourceFile = File(member.filename, "rb");
+           assert(member.size == sourceFile.size);
+           ubyte[4096] chunk;
+           add(member, sourceFile.byChunk(chunk[]));
+        }
+        else
+            add(member, new ubyte[0]);
+    }
+
+    import dcompress.primitives : isCompressInput;
+
+    void add(InR)(TarMember member, InR content)
+    if (isCompressInput!InR)
     {
         debug(tar) writeln("Adding file to tar: ", member.filename);
 
-        _members[member.filename] = member;
+        _members[member.filename] = MemberWithPosition(member, _endBlocksPos);
 
         auto header = member.toTarHeader();
         _file.reopen(null, "rb+"); // Reopen for write
         _file.seek(_endBlocksPos);
         _file.rawWrite(header.asBytes);
-        if (member.content.length > 0)
-            _file.rawWrite(member.content);
+
+        if (member.size > 0)
+        {
+            import std.traits : Unqual, isArray;
+            import std.range.primitives : ElementType;
+
+            static if (isArray!InR)
+            {
+                assert(member.size == content.length);
+                _file.rawWrite(content);
+            }
+            else static if (isArray!(ElementType!InR))
+            {
+                import std.algorithm.iteration : each;
+                size_t bytesWritten = 0;
+                content.each!((chunk) {
+                    _file.rawWrite(chunk);
+                    bytesWritten += chunk.length;
+                });
+                assert(member.size == bytesWritten);
+            }
+            else // ubyte
+            {
+                size_t bytesWritten = 0;
+                ubyte[4096] chunk;
+                while (!content.empty)
+                {
+                    auto len = chunk.length;
+                    foreach (i; 0 .. chunk.length)
+                    {
+                        chunk[i] = content.front;
+                        content.popFront();
+                        if (content.empty)
+                        {
+                            break;
+                            len = i;
+                        }
+                    }
+                    _file.rawWrite(chunk[0 .. len]);
+                    bytesWritten += len;
+                }
+                assert(member.size == bytesWritten);
+            }
+        }
+
         _endBlocksPos = _file.tell().roundUpToMultiple(_blockSize);
         version (Posix)
         {
@@ -724,17 +825,17 @@ public:
 
     void extract(string memberFilename, string destPath = ".")
     {
-        extract(_members[memberFilename], destPath);
-    }
-
-    static void extract(TarMember member, string destPath = ".")
-    {
         if (destPath.length == 0)
             destPath = ".";
 
         import std.path : isValidPath, exists, isDir, buildPath;
         if (!isValidPath(destPath) || (exists(destPath) && !isDir(destPath)))
             throw new TarException("Invalid destination path: '" ~ destPath ~ "'");
+
+        auto mp = (memberFilename in _members);
+        assert(mp !is null);
+
+        TarMember member = mp.member;
 
         import std.path : dirName, baseName;
         import std.file : write, mkdirRecurse;
@@ -774,7 +875,8 @@ public:
 
         if (member.size > 0)
         {
-            write(fullPath, member.content);
+            auto content = readContentAt(mp.position, mp.member.size);
+            write(fullPath, content);
         }
 
         import core.sys.posix.unistd : lchown;
@@ -797,7 +899,7 @@ public:
     void extractAll(string destPath = ".")
     {
         import std.algorithm.iteration :  each;
-        _members.byValue.each!(member => extract(member, destPath));
+        _members.byKey.each!(filename => extract(filename, destPath));
     }
 }
 
