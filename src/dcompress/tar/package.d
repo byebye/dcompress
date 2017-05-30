@@ -610,10 +610,12 @@ TarReader!TarInput tarReader(TarInput)(TarInput input)
     return TarReader!TarInput(input);
 }
 
-import dcompress.primitives : isCompressInput;
+import std.traits : Unqual;
+import std.range.primitives : isInputRange, ElementType;
+
 
 struct TarReader(TarInput)
-if (isCompressInput!TarInput)
+if (isInputRange!TarInput && is(Unqual!(ElementType!TarInput) == ubyte))
 {
     import std.typecons : Tuple;
     import std.traits : isArray;
@@ -869,7 +871,7 @@ public:
            add(member, sourceFile.byChunk(chunk[]));
         }
         else
-            add(member, new ubyte[0]);
+            add(member, []);
     }
 
     import dcompress.primitives : isCompressInput;
