@@ -115,8 +115,9 @@ void testTarRead()
 {
     import std.file : read;
     import dcompress.tar;
-    auto bytes = cast(ubyte[]) read("tests/tar_ex.tar");
-    auto reader = tarReader(bytes);
+    //auto bytes = cast(ubyte[]) read("tests/tar_ex.tar");
+    //auto reader = tarReader(bytes);
+    auto reader = tarReader(File("tests/tar_ex.tar").byChunk(4096).joiner);
     foreach (mc; reader)
     {
         writeln("------------------");
@@ -128,27 +129,27 @@ void testTarOpen()
 {
     import dcompress.tar;
     auto tar = TarFile.open("tests/tar_ex.tar");
-    TarMember member;
-    member.filename = "lib/lalala.txt";
-    //member.linkedToFilename =
-    member.fileType = FileType.regular;
-    //member.content = cast(void[]) "lalala";
-    //member.size = member.content.length;
-    member.mode = 420;
-    member.userId = 1000;
-    member.groupId = 1000;
-    member.userName = "byebye";
-    member.groupName = "byebye";
-    member.deviceMajorNumber = 0;
-    member.deviceMinorNumber = 0;
-    import std.datetime : SysTime;
-    member.modificationTime = SysTime.fromUnixTime(13106354744);
-    //tar.add(member);
-    auto stat = FileStat("lib");
-    writeln("GROUP: ", stat.groupName());
-    writeln("USER: ", stat.userName());
-    writefln("MODE: %o", stat.mode());
-    writefln("Size: %d", stat.size());
+    //TarMember member;
+    //member.filename = "lib/lalala.txt";
+    ////member.linkedToFilename =
+    //member.fileType = FileType.regular;
+    ////member.content = cast(void[]) "lalala";
+    ////member.size = member.content.length;
+    //member.mode = 420;
+    //member.userId = 1000;
+    //member.groupId = 1000;
+    //member.userName = "byebye";
+    //member.groupName = "byebye";
+    //member.deviceMajorNumber = 0;
+    //member.deviceMinorNumber = 0;
+    //import std.datetime : SysTime;
+    //member.modificationTime = SysTime.fromUnixTime(13106354744);
+    ////tar.add(member);
+    //auto stat = FileStat("lib");
+    //writeln("GROUP: ", stat.groupName());
+    //writeln("USER: ", stat.userName());
+    //writefln("MODE: %o", stat.mode());
+    //writefln("Size: %d", stat.size());
 }
 
 void testTarAddRecursive()
@@ -185,8 +186,8 @@ void main() {
     //testBz2();
     //bz2();
     //testTarRead();
-    //testTarOpen();
+    testTarOpen();
     //testTarAddRecursive();
     //testTarExtract();
-    testTarWrite();
+    //testTarWrite();
 }

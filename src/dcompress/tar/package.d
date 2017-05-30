@@ -605,9 +605,9 @@ if (isInputRange!R)
     return Chunks(input);
 }
 
-TarReader!TarInput tarReader(TarInput)(TarInput input)
+auto tarReader(bool withContent = true, TarInput)(TarInput input)
 {
-    return TarReader!TarInput(input);
+    return TarReader!(TarInput, withContent)(input);
 }
 
 template isTarInput(R)
@@ -615,21 +615,30 @@ template isTarInput(R)
     import std.traits : Unqual;
     import std.range.primitives : isInputRange, ElementType;
 
-    enum isTarInput = isInputRange!R &&
-        is(Unqual!(ElementType!R) == ubyte);
+    enum isTarInput = isInputRange!R && is(Unqual!(ElementType!R) == ubyte);
 }
 
-struct TarReader(TarInput)
+import std.typecons : Tuple;
+alias TarMemberWithContent = Tuple!(TarMember, "member", void[], "content");
+alias TarMemberWithPosition = Tuple!(TarMember, "member", size_t, "position");
+
+
+struct TarReader(TarInput, bool withContent = true)
 if (isTarInput!TarInput)
 {
-    import std.typecons : Tuple;
     import std.traits : isArray;
-    alias TarMemberWithContent = Tuple!(TarMember, "member", void[], "content");
 
 private:
 
     TarInput _input;
-    TarMemberWithContent _member;
+
+    static if (withContent)
+        TarMemberWithContent _member;
+    else
+    {
+        size_t _position;
+        TarMemberWithPosition _member;
+    }
     bool _empty;
     static enum _blockSize = TarHeader.sizeof;
 
@@ -643,9 +652,24 @@ public:
         popFront;
     }
 
-    @property TarMemberWithContent front()
+    static if (withContent)
     {
-        return _member;
+        @property TarMemberWithContent front()
+        {
+            return _member;
+        }
+    }
+    else
+    {
+        @property TarMemberWithPosition front()
+        {
+            return _member;
+        }
+
+        @property size_t position() const
+        {
+            return _position;
+        }
     }
 
     @property bool empty()
@@ -667,14 +691,13 @@ public:
         auto headerBytes = cast(ubyte[]) (cast(void*) &tarHeader)[0 .. _blockSize];
         auto rem = refRange(&_input).take(_blockSize).copy(headerBytes);
 
-        if (rem.length > 0)
-            throw new TarException("Not enough bytes for tar header.");
-
         if (headerBytes[0] == '\0')
         {
             _empty = true;
             return;
         }
+        else if (rem.length > 0)
+            throw new TarException("Not enough bytes for tar header.");
 
         static if (isArray!TarInput)
             _input = _input[_blockSize .. $];
@@ -684,18 +707,35 @@ public:
         assert(TarHeader.calculateChecksum(tarHeader) ==
             TarHeader.calculateChecksum(member.toTarHeader));
 
-        ubyte[] content;
-        if (member.size > 0)
+        static if (withContent)
         {
-            content.length = member.size;
-            rem = refRange(&_input).take(content.length).copy(content);
+            ubyte[] content;
+            if (member.size > 0)
+            {
+                content.length = member.size;
+                rem = refRange(&_input).take(content.length).copy(content);
 
-            if (rem.length > 0)
-                throw new TarException("Not enough bytes for tar member content.");
+                if (rem.length > 0)
+                    throw new TarException("Not enough bytes for tar member content.");
 
-            static if (isArray!TarInput)
-                _input = _input[content.length .. $];
+                static if (isArray!TarInput)
+                    _input = _input[content.length .. $];
 
+                auto mod = member.size % _blockSize;
+                if (mod > 0)
+                {
+                    import std.range.primitives : popFrontN;
+                    auto popped = _input.popFrontN(_blockSize - mod);
+                    assert(popped == _blockSize - mod);
+                }
+            }
+
+            _member = TarMemberWithContent(member, content);
+        }
+        else
+        {
+            _position += _blockSize;
+            _member = TarMemberWithPosition(member, _position);
             auto mod = member.size % _blockSize;
             if (mod > 0)
             {
@@ -703,9 +743,8 @@ public:
                 auto popped = _input.popFrontN(_blockSize - mod);
                 assert(popped == _blockSize - mod);
             }
+            _position = (_position + member.size).roundUpToMultiple(_blockSize);
         }
-
-        _member = TarMemberWithContent(member, content);
     }
 }
 
@@ -863,12 +902,10 @@ public:
 struct TarFile
 {
     import std.stdio : File;
-    import std.typecons : Tuple;
-    alias MemberWithPosition = Tuple!(TarMember, "member", size_t, "position");
 
 private:
 
-    MemberWithPosition[string] _members;
+    TarMemberWithPosition[string] _members;
 
     File _file;
     size_t _endBlocksPos;
@@ -877,54 +914,27 @@ private:
 
 public:
 
-    static TarFile open(string path, in char[] openMode = "rb")
+    static TarFile open(string path)
     {
         TarFile tarFile;
-        tarFile._file = File(path, openMode);
+        tarFile._file = File(path, "rb+");
 
-        auto file = &tarFile._file;
+        import std.algorithm.iteration : joiner;
 
-        while (!file.eof)
+        ubyte[4096] chunk;
+        auto fileInput = tarFile._file.byChunk(chunk).joiner;
+        auto reader = tarReader!false(fileInput);
+
+        foreach (mp; reader)
         {
-            TarHeader tarHeader;
-            auto buffer = cast(ubyte[]) (cast(void*) &tarHeader)[0 .. tarHeader.sizeof];
-            auto headerBytes = file.rawRead(buffer);
-
-            if (headerBytes[0] == '\0')
+            tarFile._members[mp.member.filename] = mp;
+            debug(tar)
             {
-                tarFile._endBlocksPos = file.tell() - TarHeader.sizeof;
-                auto left = file.size() - tarFile._endBlocksPos;
-                debug(tar)
-                {
-                    writeln("End of tar archive.");
-                    writefln("Padding: %d bytes = %d blocks from total of %d",
-                        left, left / _blockSize, file.size() / _blockSize);
-                }
-                assert(left % _blockSize == 0);
-                file.rewind();
-                break;
+                writeln("------------------");
+                writeln(mp.member);
             }
-            if (headerBytes.length < buffer.length)
-                throw new TarException("Not enough bytes read for tar header.");
-
-            auto member = TarMember(tarHeader);
-
-            //writeln("### TarMember\n", member, "-----------------------");
-
-            assert(TarHeader.calculateChecksum(tarHeader) ==
-                TarHeader.calculateChecksum(member.toTarHeader));
-
-            size_t position = file.tell();
-
-            if (member.size > 0)
-            {
-                immutable pos = (file.tell() + member.size)
-                    .roundUpToMultiple(_blockSize);
-                file.seek(pos);
-            }
-
-            tarFile._members[member.filename] = MemberWithPosition(member, position);
         }
+        tarFile._endBlocksPos = reader.position;
 
         return tarFile;
     }
@@ -1008,10 +1018,10 @@ public:
     {
         debug(tar) writeln("Adding file to tar: ", member.filename);
 
-        _members[member.filename] = MemberWithPosition(member, _endBlocksPos);
+        _members[member.filename] = TarMemberWithPosition(member, _endBlocksPos);
 
         auto header = member.toTarHeader();
-        _file.reopen(null, "rb+"); // Reopen for write
+        //_file.reopen(null, "rb+"); // Reopen for write
         _file.seek(_endBlocksPos);
         _file.rawWrite(header.asBytes);
 

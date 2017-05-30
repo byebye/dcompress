@@ -17,3 +17,25 @@ template isCompressInput(R)
             (is(Unqual!(ElementType!R) == ubyte) || isArray!(ElementType!UR));
 }
 
+
+struct FileOutputRange
+{
+private:
+    import std.stdio : File;
+
+    File _file;
+
+public:
+
+    this(File file)
+    {
+        _file = file;
+        _file.reopen(null, "a");
+    }
+
+    void put(const(void)[] data)
+    {
+        _file.rawWrite(data);
+    }
+}
+
