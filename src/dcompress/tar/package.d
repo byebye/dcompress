@@ -558,6 +558,150 @@ struct FileStat
     }
 }
 
+auto chunks(size_t chunkSize, R)(R input)
+if (isInputRange!R)
+{
+    alias E = Unqal!(ElementType!R);
+    struct Chunks
+    {
+    private:
+        E[chunkSize] _buffer;
+        E[] _chunk;
+        R _input;
+
+    public:
+
+        @property E[] front()
+        {
+            return _chunk;
+        }
+
+        @property void popFront()
+        in
+        {
+            assert(!input.empty);
+        }
+        body
+        {
+            auto len = _buffer.length;
+            foreach (i; 0 .. _buffer.length)
+            {
+                _buffer[i] = _input.front;
+                _input.popFront();
+                if (_input.empty)
+                {
+                    break;
+                    len = i;
+                }
+            }
+            _chunk = _buffer[0 .. len];
+        }
+
+        @property bool empty()
+        {
+            return _chunk.length == 0 && _input.empty;
+        }
+    }
+    return Chunks(input);
+}
+
+TarReader!TarInput tarReader(TarInput)(TarInput input)
+{
+    return TarReader!TarInput(input);
+}
+
+import dcompress.primitives : isCompressInput;
+
+struct TarReader(TarInput)
+if (isCompressInput!TarInput)
+{
+    import std.typecons : Tuple;
+    import std.traits : isArray;
+    alias TarMemberWithContent = Tuple!(TarMember, "member", void[], "content");
+
+private:
+
+    TarInput _input;
+    TarMemberWithContent _member;
+    bool _empty;
+    static enum _blockSize = TarHeader.sizeof;
+
+public:
+
+    @disable this();
+
+    this(TarInput input)
+    {
+        _input = input;
+        popFront;
+    }
+
+    @property TarMemberWithContent front()
+    {
+        return _member;
+    }
+
+    @property bool empty()
+    {
+        return _empty;
+    }
+
+    @property void popFront()
+    in
+    {
+        assert(!empty);
+    }
+    body
+    {
+        import std.range : take, refRange;
+        import std.algorithm.mutation : copy;
+
+        TarHeader tarHeader;
+        auto headerBytes = cast(ubyte[]) (cast(void*) &tarHeader)[0 .. _blockSize];
+        auto rem = refRange(&_input).take(_blockSize).copy(headerBytes);
+
+        if (rem.length > 0)
+            throw new TarException("Not enough bytes for tar header.");
+
+        if (headerBytes[0] == '\0')
+        {
+            _empty = true;
+            return;
+        }
+
+        static if (isArray!TarInput)
+            _input = _input[_blockSize .. $];
+
+        auto member = TarMember(tarHeader);
+
+        assert(TarHeader.calculateChecksum(tarHeader) ==
+            TarHeader.calculateChecksum(member.toTarHeader));
+
+        ubyte[] content;
+        if (member.size > 0)
+        {
+            content.length = member.size;
+            rem = refRange(&_input).take(content.length).copy(content);
+
+            if (rem.length > 0)
+                throw new TarException("Not enough bytes for tar member content.");
+
+            static if (isArray!TarInput)
+                _input = _input[content.length .. $];
+
+            auto mod = member.size % _blockSize;
+            if (mod > 0)
+            {
+                import std.range.primitives : popFrontN;
+                auto popped = _input.popFrontN(_blockSize - mod);
+                assert(popped == _blockSize - mod);
+            }
+        }
+
+        _member = TarMemberWithContent(member, content);
+    }
+}
+
 struct TarFile
 {
     import std.stdio : File;
@@ -582,11 +726,12 @@ public:
 
         auto file = &tarFile._file;
 
-        char[TarHeader.sizeof] buffer;
-
         while (!file.eof)
         {
-            auto headerBytes = file.rawRead(buffer[]);
+            TarHeader tarHeader;
+            auto buffer = cast(ubyte[]) (cast(void*) &tarHeader)[0 .. tarHeader.sizeof];
+            auto headerBytes = file.rawRead(buffer);
+
             if (headerBytes[0] == '\0')
             {
                 tarFile._endBlocksPos = file.tell() - TarHeader.sizeof;
@@ -604,21 +749,9 @@ public:
             if (headerBytes.length < buffer.length)
                 throw new TarException("Not enough bytes read for tar header.");
 
-            TarHeader tarHeader;
-            foreach (i, ref field; tarHeader.tupleof[0 .. $ - 1])
-            {
-                field = headerBytes[0 .. field.sizeof];
-                headerBytes = headerBytes[field.sizeof .. $];
-            }
-
             auto member = TarMember(tarHeader);
 
             //writeln("### TarMember\n", member, "-----------------------");
-
-            //writeln("-------");
-            //writeln(tarHeader.filename);
-            //writeln(member.toTarHeader.filename);
-            //writeln("-------");
 
             assert(TarHeader.calculateChecksum(tarHeader) ==
                 TarHeader.calculateChecksum(member.toTarHeader));
@@ -627,9 +760,6 @@ public:
 
             if (member.size > 0)
             {
-                //auto content = new ubyte[fileSize];
-                //file.rawRead(content);
-
                 immutable pos = (file.tell() + member.size)
                     .roundUpToMultiple(_blockSize);
                 file.seek(pos);
@@ -766,36 +896,20 @@ public:
                 assert(member.size == content.length);
                 _file.rawWrite(content);
             }
-            else static if (isArray!(ElementType!InR))
+            else
             {
+                static if (isArray!(ElementType!InR))
+                    alias contentChunks = content;
+                else // ubyte
+                    auto contentChunks = chunks!4096(content);
+
                 import std.algorithm.iteration : each;
+
                 size_t bytesWritten = 0;
-                content.each!((chunk) {
+                contentChunks.each!((chunk) {
                     _file.rawWrite(chunk);
                     bytesWritten += chunk.length;
                 });
-                assert(member.size == bytesWritten);
-            }
-            else // ubyte
-            {
-                size_t bytesWritten = 0;
-                ubyte[4096] chunk;
-                while (!content.empty)
-                {
-                    auto len = chunk.length;
-                    foreach (i; 0 .. chunk.length)
-                    {
-                        chunk[i] = content.front;
-                        content.popFront();
-                        if (content.empty)
-                        {
-                            break;
-                            len = i;
-                        }
-                    }
-                    _file.rawWrite(chunk[0 .. len]);
-                    bytesWritten += len;
-                }
                 assert(member.size == bytesWritten);
             }
         }
@@ -816,11 +930,6 @@ public:
         auto size = _file.size.roundUpToMultiple(_blockingFactor * _blockSize);
         auto status = resizeFile(_file.fileno, size);
         assert(status == 0);
-    }
-
-    void remove(string file)
-    {
-
     }
 
     void extract(string memberFilename, string destPath = ".")

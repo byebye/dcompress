@@ -111,7 +111,20 @@ void bz2()
     writeln(compress(data));
 }
 
-void testTar()
+void testTarRead()
+{
+    import std.file : read;
+    import dcompress.tar;
+    auto bytes = cast(ubyte[]) read("tests/tar_ex.tar");
+    auto reader = tarReader(bytes);
+    foreach (mc; reader)
+    {
+        writeln("------------------");
+        writeln(mc.member);
+    }
+}
+
+void testTarOpen()
 {
     import dcompress.tar;
     auto tar = TarFile.open("tests/tar_ex.tar");
@@ -155,7 +168,8 @@ void testTarExtract()
 void main() {
     //testBz2();
     //bz2();
-    //testTar();
+    testTarRead();
+    //testTarOpen();
     //testTarAddRecursive();
-    testTarExtract();
+    //testTarExtract();
 }
