@@ -33,6 +33,12 @@ public:
         _file.reopen(null, "a");
     }
 
+    this(File file, size_t pos = 0)
+    {
+        _file = file;
+        _file.seek(pos);
+    }
+
     void put(const(void)[] data)
     {
         _file.rawWrite(data);

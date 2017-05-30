@@ -902,13 +902,14 @@ public:
 struct TarFile
 {
     import std.stdio : File;
+    import dcompress.primitives : FileOutputRange;
 
 private:
 
     TarMemberWithPosition[string] _members;
 
     File _file;
-    size_t _endBlocksPos;
+    TarWriter!FileOutputRange _tarWriter;
     static enum _blockSize = TarHeader.sizeof;
     size_t _blockingFactor = 20; // number of records per block
 
@@ -934,9 +935,25 @@ public:
                 writeln(mp.member);
             }
         }
-        tarFile._endBlocksPos = reader.position;
+
+        auto fileOutput = FileOutputRange(tarFile._file, reader.position);
+        tarFile._tarWriter = tarWriter(fileOutput);
 
         return tarFile;
+    }
+
+    ~this()
+    {
+        close();
+    }
+
+    void close()
+    {
+        if (_file.isOpen)
+        {
+            _tarWriter.finish();
+            _file.close();
+        }
     }
 
     @property size_t size()
@@ -970,45 +987,12 @@ public:
     void add(alias memberFilter = (TarMember member) => true)(
         string filename, bool recursive = true)
     {
-        static if (!isPredicate!(memberFilter, TarMember))
-            assert(false, "'filter' should be a predicate taking TarMember as an argument.");
-
-        import std.file : exists;
-        if (!exists(filename))
-            throw new TarException("File '" ~ filename ~ "' does not exist.");
-
-        import std.file : dirEntries;
-        import std.traits : ReturnType;
-
-        ReturnType!dirEntries entries;
-
-        import std.file : isDir;
-        if (recursive && isDir(filename))
-        {
-            import std.file : SpanMode;
-            entries = dirEntries(filename, SpanMode.breadth);
-        }
-
-        import std.algorithm.iteration : map, filter, each;
-        import std.range : only, chain;
-
-        only(filename).chain(entries)
-            .map!(name => fileToTarMember(name))
-            .filter!(member => memberFilter(member))
-            .each!(member => addReadContent(member));
+        _tarWriter.add!memberFilter(filename, recursive);
     }
 
     void addReadContent(TarMember member)
     {
-        if (member.fileType != FileType.directory && member.size > 0)
-        {
-           auto sourceFile = File(member.filename, "rb");
-           assert(member.size == sourceFile.size);
-           ubyte[4096] chunk;
-           add(member, sourceFile.byChunk(chunk[]));
-        }
-        else
-            add(member, []);
+        _tarWriter.addReadContent(member);
     }
 
     import dcompress.primitives : isCompressInput;
@@ -1016,59 +1000,7 @@ public:
     void add(InR)(TarMember member, InR content)
     if (isCompressInput!InR)
     {
-        debug(tar) writeln("Adding file to tar: ", member.filename);
-
-        _members[member.filename] = TarMemberWithPosition(member, _endBlocksPos);
-
-        auto header = member.toTarHeader();
-        //_file.reopen(null, "rb+"); // Reopen for write
-        _file.seek(_endBlocksPos);
-        _file.rawWrite(header.asBytes);
-
-        if (member.size > 0)
-        {
-            import std.traits : Unqual, isArray;
-            import std.range.primitives : ElementType;
-
-            static if (isArray!InR)
-            {
-                assert(member.size == content.length);
-                _file.rawWrite(content);
-            }
-            else
-            {
-                static if (isArray!(ElementType!InR))
-                    alias contentChunks = content;
-                else // ubyte
-                    auto contentChunks = chunks!4096(content);
-
-                import std.algorithm.iteration : each;
-
-                size_t bytesWritten = 0;
-                contentChunks.each!((chunk) {
-                    _file.rawWrite(chunk);
-                    bytesWritten += chunk.length;
-                });
-                assert(member.size == bytesWritten);
-            }
-        }
-
-        _endBlocksPos = _file.tell().roundUpToMultiple(_blockSize);
-        version (Posix)
-        {
-            import core.sys.posix.unistd : ftruncate;
-            alias resizeFile = ftruncate;
-        }
-        //else version (Windows)
-        //{
-        //    import core.sys.windows.
-        //    extern (C) int _chsize_s(int fd, long size);
-        //    alias resizeFile = _chsize_s;
-        //}
-
-        auto size = _file.size.roundUpToMultiple(_blockingFactor * _blockSize);
-        auto status = resizeFile(_file.fileno, size);
-        assert(status == 0);
+        _tarWriter.add(member, content);
     }
 
     void extract(string memberFilename, string destPath = ".")

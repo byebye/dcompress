@@ -186,8 +186,8 @@ void main() {
     //testBz2();
     //bz2();
     //testTarRead();
-    testTarOpen();
+    //testTarOpen();
     //testTarAddRecursive();
     //testTarExtract();
-    //testTarWrite();
+    testTarWrite();
 }
