@@ -165,11 +165,28 @@ void testTarExtract()
     tar.extractAll("out2/");
 }
 
+void testTarWrite()
+{
+    import dcompress.tar;
+    import std.array : appender;
+    auto app = appender!(ubyte[])();
+    auto writer = tarWriter(app);
+    writer.add("tests/tar_ex/");
+    writer.finish();
+    writeln("Archive size: ", app.data.length);
+    foreach (mc; tarReader(app.data))
+    {
+        writeln("------------------");
+        writeln(mc.member);
+    }
+}
+
 void main() {
     //testBz2();
     //bz2();
-    testTarRead();
+    //testTarRead();
     //testTarOpen();
     //testTarAddRecursive();
     //testTarExtract();
+    testTarWrite();
 }

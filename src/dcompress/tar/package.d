@@ -610,12 +610,17 @@ TarReader!TarInput tarReader(TarInput)(TarInput input)
     return TarReader!TarInput(input);
 }
 
-import std.traits : Unqual;
-import std.range.primitives : isInputRange, ElementType;
+template isTarInput(R)
+{
+    import std.traits : Unqual;
+    import std.range.primitives : isInputRange, ElementType;
 
+    enum isTarInput = isInputRange!R &&
+        is(Unqual!(ElementType!R) == ubyte);
+}
 
 struct TarReader(TarInput)
-if (isInputRange!TarInput && is(Unqual!(ElementType!TarInput) == ubyte))
+if (isTarInput!TarInput)
 {
     import std.typecons : Tuple;
     import std.traits : isArray;
@@ -701,6 +706,157 @@ public:
         }
 
         _member = TarMemberWithContent(member, content);
+    }
+}
+
+private TarMember fileToTarMember(string filename)
+{
+    auto stat = FileStat(filename);
+
+    TarMember member;
+    member.filename = filename;
+    member.fileType = stat.fileType();
+    if (member.fileType == FileType.regular ||
+        member.fileType == FileType.regularCompatibility ||
+        member.fileType == FileType.hardLink)
+        member.size = stat.size();
+    if (member.fileType == FileType.symbolicLink)
+    {
+        import std.file : readLink;
+        member.linkedToFilename = readLink(filename);
+    }
+    member.userId = stat.userId();
+    member.groupId = stat.groupId();
+    member.userName = stat.userName();
+    member.groupName = stat.groupName();
+    member.mode = stat.mode();
+    if (member.fileType == FileType.characterSpecial ||
+        member.fileType == FileType.blockSpecial)
+    {
+        member.deviceMajorNumber = stat.deviceMajorNumber;
+        member.deviceMinorNumber = stat.deviceMinorNumber;
+    }
+    import std.datetime : SysTime;
+    member.modificationTime = SysTime.fromUnixTime(stat.modificationTime);
+
+    return member;
+}
+
+template isTarOutput(R)
+{
+    import std.range.primitives : isOutputRange;
+
+    enum isTarOutput = (isOutputRange!(R, ubyte) || isOutputRange!(R, const(void)[]));
+}
+
+TarWriter!TarOutput tarWriter(TarOutput)(TarOutput output)
+{
+    return TarWriter!TarOutput(output);
+}
+
+struct TarWriter(TarOutput)
+if (isTarOutput!TarOutput)
+{
+private:
+
+    TarOutput _output;
+    size_t _writtenBytes;
+    static enum _blockSize = TarHeader.sizeof;
+    size_t _blockingFactor = 20; // number of records per block
+
+public:
+
+    private void padToMultiple(size_t n)
+    {
+        auto padding = _writtenBytes.roundUpToMultiple(n) - _writtenBytes;
+        if (padding == 0)
+            return;
+        _writtenBytes += padding;
+        import std.range : put, repeat, take;
+        put(_output, '\0'.repeat.take(padding));
+    }
+
+    void finish()
+    {
+        padToMultiple(_blockingFactor * _blockSize);
+    }
+
+    void add(alias memberFilter = (TarMember member) => true)(
+        string filename, bool recursive = true)
+    {
+        static if (!isPredicate!(memberFilter, TarMember))
+            assert(false, "'filter' should be a predicate taking TarMember as an argument.");
+
+        import std.file : exists;
+        if (!exists(filename))
+            throw new TarException("File '" ~ filename ~ "' does not exist.");
+
+        import std.file : dirEntries;
+        import std.traits : ReturnType;
+
+        ReturnType!dirEntries entries;
+
+        import std.file : isDir;
+        if (recursive && isDir(filename))
+        {
+            import std.file : SpanMode;
+            entries = dirEntries(filename, SpanMode.breadth);
+        }
+
+        import std.algorithm.iteration : map, filter, each;
+        import std.range : only, chain;
+
+        only(filename).chain(entries)
+            .map!(name => fileToTarMember(name))
+            .filter!(member => memberFilter(member))
+            .each!(member => addReadContent(member));
+    }
+
+    void addReadContent(TarMember member)
+    {
+        debug(tar)
+            writefln("Adding file to tar: %s (size: %d)",
+                member.filename, member.size);
+
+        if (member.size > 0)
+        {
+           auto sourceFile = File(member.filename, "rb");
+           assert(member.size == sourceFile.size);
+           ubyte[4096] chunk;
+           add(member, sourceFile.byChunk(chunk[]));
+        }
+        else
+        {
+            add(member);
+        }
+    }
+
+    void add(TarMember member)
+    {
+        auto header = member.toTarHeader();
+
+        import std.range.primitives : put;
+        put(_output, cast(ubyte[]) header.asBytes);
+
+        _writtenBytes += _blockSize;
+    }
+
+    import dcompress.primitives : isCompressInput;
+
+    void add(InR)(TarMember member, InR content)
+    if (isCompressInput!InR)
+    {
+        add(member);
+
+        if (member.size > 0)
+        {
+            import std.range.primitives : put;
+            put(_output, content);
+
+            _writtenBytes += member.size;
+
+            padToMultiple(_blockSize);
+        }
     }
 }
 
@@ -830,35 +986,6 @@ public:
             .map!(name => fileToTarMember(name))
             .filter!(member => memberFilter(member))
             .each!(member => addReadContent(member));
-    }
-
-    private TarMember fileToTarMember(string filename)
-    {
-        auto stat = FileStat(filename);
-
-        TarMember member;
-        member.filename = filename;
-        member.fileType = stat.fileType();
-        if (member.fileType == FileType.symbolicLink)
-        {
-            import std.file : readLink;
-            member.linkedToFilename = readLink(filename);
-        }
-        member.userId = stat.userId();
-        member.groupId = stat.groupId();
-        member.userName = stat.userName();
-        member.groupName = stat.groupName();
-        member.mode = stat.mode();
-        if (member.fileType == FileType.characterSpecial ||
-            member.fileType == FileType.blockSpecial)
-        {
-            member.deviceMajorNumber = stat.deviceMajorNumber;
-            member.deviceMinorNumber = stat.deviceMinorNumber;
-        }
-        import std.datetime : SysTime;
-        member.modificationTime = SysTime.fromUnixTime(stat.modificationTime);
-
-        return member;
     }
 
     void addReadContent(TarMember member)
