@@ -182,15 +182,35 @@ void testTarWrite()
     }
 }
 
+void testTarGz()
+{
+    import dcompress.tar;
+    import dcompress.zlib;
+    import dcompress.primitives;
+    import std.file : read;
+
+    //auto reader = tarReader(File("tests/tar_ex.tar").byChunk(4096).joiner);
+    auto outFile = File("tests/tar_ex.tar.gz", "wb");
+    auto inFile = File("tests/tar_ex.tar", "rb");
+    writeln("----------__COMPRESS__----------------");
+    import std.array : appender;
+    //auto output = appender!(ubyte[]);
+    auto output = outFile.lockingBinaryWriter;
+    auto zlibOutput = zlibOutputRange(output, CompressionPolicy.gzipPolicy);
+    inFile.byChunk(1024 * 256).copy(zlibOutput);
+    //foreach (ubyte[] chunk; inFile.byChunk(4096))
+    //    zlibOutput.put(chunk);
+    zlibOutput.finish();
+    //writeln(output.data);
+}
+
 void main() {
     //testBz2();
     //bz2();
     //testTarRead();
-    testTarOpen();
+    //testTarOpen();
     //testTarAddRecursive();
     //testTarExtract();
     //testTarWrite();
-    //auto f = File("out.txt", "rb+");
-    //f.seek(f.size);
-    //"aaaa".copy(f.lockingBinaryWriter);
+    testTarGz();
 }

@@ -93,6 +93,13 @@ public:
          return CompressionPolicy.init;
     }
 
+    static CompressionPolicy gzipPolicy()
+    {
+        CompressionPolicy policy;
+        policy.header = DataHeader.gzip;
+        return policy;
+    }
+
     /++
      + Specifies the default buffer size being allocated by compressing
      + functions when `buffer.isNull == true`.
@@ -373,7 +380,16 @@ struct Compressor
 {
 private:
 
-    c_zlib.z_stream _zlibStream;
+    struct ZStreamWrapper
+    {
+        c_zlib.z_stream zlibStream;
+        ~this()
+        {
+            c_zlib.deflateEnd(&zlibStream);
+        }
+    }
+
+    ZStreamWrapper* _zStreamWrapper;
     CompressionPolicy _policy;
     enum Status : ubyte
     {
@@ -382,6 +398,11 @@ private:
         finished
     }
     Status _status = Status.needsMoreInput;
+
+    inout(c_zlib.z_stream)* _zlibStream() inout
+    {
+        return &_zStreamWrapper.zlibStream;
+    }
 
 public:
 
@@ -423,8 +444,9 @@ public:
 
     private this(CompressionPolicy policy)
     {
+        _zStreamWrapper = new ZStreamWrapper;
         immutable status = c_zlib.deflateInit2(
-            &_zlibStream,
+            _zlibStream,
             policy.compressionLevel,
             CompressionMethod.deflate,
             policy.windowBitsWithHeader,
@@ -585,11 +607,6 @@ public:
         assert(comp.buffer.length == 200);
     }
 
-    ~this()
-    {
-        c_zlib.deflateEnd(&_zlibStream);
-    }
-
     /++
      + Gets the current policy used during the compression process.
      +
@@ -668,7 +685,7 @@ public:
     {
         uint bytes;
         // Casting away const here is safe as deflatePending does not modify the stream.
-        immutable status = c_zlib.deflatePending(cast(c_zlib.z_stream*) &_zlibStream, &bytes, null);
+        immutable status = c_zlib.deflatePending(cast(c_zlib.z_stream*) _zlibStream, &bytes, null);
         // This structure ensures a consistent state of the stream.
         assert(status == ZlibStatus.ok);
         return bytes;
@@ -989,12 +1006,12 @@ public:
         // * ZlibStatus.bufferError -- no progress possible
         // * ZlibStatus.streamEnd -- all input has been consumed and all output
         //   has been produced (only when mode == FlushMode.finish)
-        auto status = c_zlib.deflate(&_zlibStream, mode);
+        auto status = c_zlib.deflate(_zlibStream, mode);
 
         if (status == ZlibStatus.streamEnd)
         {
             _status = Status.finished;
-            status = c_zlib.deflateReset(&_zlibStream);
+            status = c_zlib.deflateReset(_zlibStream);
             assert(status == ZlibStatus.ok);
         }
         else if (status == ZlibStatus.ok)
@@ -1024,7 +1041,7 @@ public:
  +/
 private size_t getCompressedSizeBound(ref Compressor comp, size_t inputLength)
 {
-    return c_zlib.deflateBound(&comp._zlibStream, inputLength);
+    return c_zlib.deflateBound(comp._zlibStream, inputLength);
 }
 
 /++
@@ -1162,7 +1179,7 @@ unittest
  +
  + Throws: `ZlibException` if any error occurs.
  +/
-void compress(OutR)(const(void)[] data, ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+void compress(OutR)(const(void)[] data, auto ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 if (isCompressOutput!OutR)
 {
     debug(zlib) writeln("compress!(void[], OutputRange)");
@@ -1238,7 +1255,7 @@ unittest
  +
  + Throws: `ZlibException` if any error occurs.
  +/
-void compress(InR, OutR)(InR data, ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+void compress(InR, OutR)(InR data, auto ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
 if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
 {
     debug(zlib) writeln("compress!(InputRange, OutputRange)");
@@ -1385,3 +1402,56 @@ if (isCompressOutput!OutR)
     } while (comp.outputPending);
 }
 
+ZlibOutputRange!OutR zlibOutputRange(OutR)(
+    auto ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+{
+    auto tmp = ZlibOutputRange!OutR(output, policy);
+    return tmp;
+}
+
+/++
+ + Compresses data on the fly and outputs it into the given output range.
+ +/
+struct ZlibOutputRange(OutR)
+if (isCompressOutput!OutR)
+{
+
+private:
+
+    OutR _output;
+    Compressor _comp;
+
+public:
+
+    this()(auto ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+    {
+        _output = output;
+        _comp = Compressor.create(policy);
+    }
+
+    ~this()
+    {
+        finish();
+    }
+
+    void finish()
+    {
+        _comp.flushAll(_output);
+    }
+
+    import std.range : isInputRange;
+    import std.traits : hasIndirections;
+
+    @property void put(T)(T value)
+    if (!hasIndirections!T && !isInputRange!T)
+    {
+        put((&value)[0 .. 1]);
+    }
+
+    @property void put(T)(in T[] input)
+    if (!hasIndirections!T && !isInputRange!T)
+    {
+        writeln("Put: ", input.length);
+        _comp.compressAll(input, _output);
+    }
+}
