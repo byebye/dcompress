@@ -6,7 +6,7 @@ import std.stdio;
 import dcompress.zlib;
 
 import std_zlib = std.zlib;
-import std.algorithm : map, joiner;
+import std.algorithm : map, joiner, copy;
 import std.array : array, join;
 import std.stdio;
 
@@ -129,27 +129,27 @@ void testTarOpen()
 {
     import dcompress.tar;
     auto tar = TarFile.open("tests/tar_ex.tar");
-    //TarMember member;
-    //member.filename = "lib/lalala.txt";
-    ////member.linkedToFilename =
-    //member.fileType = FileType.regular;
-    ////member.content = cast(void[]) "lalala";
-    ////member.size = member.content.length;
-    //member.mode = 420;
-    //member.userId = 1000;
-    //member.groupId = 1000;
-    //member.userName = "byebye";
-    //member.groupName = "byebye";
-    //member.deviceMajorNumber = 0;
-    //member.deviceMinorNumber = 0;
-    //import std.datetime : SysTime;
-    //member.modificationTime = SysTime.fromUnixTime(13106354744);
-    ////tar.add(member);
-    //auto stat = FileStat("lib");
-    //writeln("GROUP: ", stat.groupName());
-    //writeln("USER: ", stat.userName());
-    //writefln("MODE: %o", stat.mode());
-    //writefln("Size: %d", stat.size());
+    TarMember member;
+    member.filename = "lib/lalala.txt";
+    //member.linkedToFilename =
+    member.fileType = FileType.regular;
+    auto content = cast(void[]) "lalala";
+    member.size = content.length;
+    member.mode = 420;
+    member.userId = 1000;
+    member.groupId = 1000;
+    member.userName = "byebye";
+    member.groupName = "byebye";
+    member.deviceMajorNumber = 0;
+    member.deviceMinorNumber = 0;
+    import std.datetime : SysTime;
+    member.modificationTime = SysTime.fromUnixTime(13106314744);
+    tar.add(member, content);
+    auto stat = FileStat("lib");
+    writeln("GROUP: ", stat.groupName());
+    writeln("USER: ", stat.userName());
+    writefln("MODE: %o", stat.mode());
+    writefln("Size: %d", stat.size());
 }
 
 void testTarAddRecursive()
@@ -186,8 +186,11 @@ void main() {
     //testBz2();
     //bz2();
     //testTarRead();
-    //testTarOpen();
+    testTarOpen();
     //testTarAddRecursive();
     //testTarExtract();
-    testTarWrite();
+    //testTarWrite();
+    //auto f = File("out.txt", "rb+");
+    //f.seek(f.size);
+    //"aaaa".copy(f.lockingBinaryWriter);
 }

@@ -736,14 +736,15 @@ public:
         {
             _position += _blockSize;
             _member = TarMemberWithPosition(member, _position);
-            auto mod = member.size % _blockSize;
-            if (mod > 0)
+            if (member.size > 0)
             {
                 import std.range.primitives : popFrontN;
-                auto popped = _input.popFrontN(_blockSize - mod);
-                assert(popped == _blockSize - mod);
+
+                auto toDrop = member.size.roundUpToMultiple(_blockSize);
+                auto popped = _input.popFrontN(toDrop);
+                assert(popped == toDrop);
+                _position += toDrop;
             }
-            _position = (_position + member.size).roundUpToMultiple(_blockSize);
         }
     }
 }
@@ -899,17 +900,91 @@ public:
     }
 }
 
+import dcompress.primitives : isCompressInput;
+
+void extract(InR)(TarMember member, InR content, string destPath = ".")
+if (isCompressInput!InR)
+{
+    if (destPath.length == 0)
+        destPath = ".";
+
+    import std.path : isValidPath, exists, isDir, buildPath;
+    if (!isValidPath(destPath) || (exists(destPath) && !isDir(destPath)))
+        throw new TarException("Invalid destination path: '" ~ destPath ~ "'");
+
+    import std.path : dirName, baseName;
+    import std.file : write, mkdirRecurse;
+
+    immutable fullPath = buildPath(destPath, member.filename);
+    destPath = buildPath(destPath, dirName(member.filename));
+
+    // Do not overwrite existing filess
+    if (exists(fullPath))
+        return;
+
+    mkdirRecurse(destPath);
+
+    debug(tar) writeln("Destination: ", fullPath);
+
+    import std.string : toStringz;
+    immutable fullPathC = fullPath.toStringz;
+
+    if (member.fileType == FileType.directory)
+    {
+        import core.sys.posix.sys.stat : mkdir;
+        mkdir(fullPathC, member.mode).enforceSuccess;
+    }
+    else if (member.fileType == FileType.symbolicLink)
+    {
+        import core.sys.posix.unistd : symlink;
+        symlink(member.linkedToFilename.toStringz, fullPathC).enforceSuccess;
+    }
+    else
+    {
+        immutable mode = FileStat.posixFileMode(member.mode, member.fileType);
+        immutable devNumber = FileStat.makeDeviceNumber(
+            member.deviceMajorNumber, member.deviceMinorNumber);
+
+        import core.sys.posix.sys.stat : mknod;
+        mknod(fullPathC, mode, devNumber).enforceSuccess;
+    }
+
+    if (member.size > 0)
+    {
+        import std.stdio : File;
+        import std.algorithm.mutation : copy;
+
+        auto file = File(fullPath, "ab");
+        content.copy(file.lockingBinaryWriter);
+    }
+
+    import core.sys.posix.unistd : lchown;
+    lchown(fullPathC, member.userId, member.groupId).enforceSuccess;
+
+    auto stat = FileStat(fullPath);
+
+    import core.sys.posix.sys.time;
+    import core.sys.posix.sys.stat : utimensat;
+
+    timespec[2] newTime;
+    newTime[0].tv_sec = stat.accessTime();
+    newTime[1].tv_sec = member.modificationTime.toUnixTime();
+
+    import core.sys.posix.fcntl : AT_FDCWD, AT_SYMLINK_NOFOLLOW;
+
+    utimensat(AT_FDCWD, fullPathC, newTime, AT_SYMLINK_NOFOLLOW).enforceSuccess;
+}
+
 struct TarFile
 {
     import std.stdio : File;
-    import dcompress.primitives : FileOutputRange;
 
 private:
 
     TarMemberWithPosition[string] _members;
 
     File _file;
-    TarWriter!FileOutputRange _tarWriter;
+    TarWriter!(File.BinaryWriterImpl!true) _tarWriter;
     static enum _blockSize = TarHeader.sizeof;
     size_t _blockingFactor = 20; // number of records per block
 
@@ -926,7 +1001,8 @@ public:
         auto fileInput = tarFile._file.byChunk(chunk).joiner;
         auto reader = tarReader!false(fileInput);
 
-        foreach (mp; reader)
+        import std.range : refRange;
+        foreach (mp; refRange(&reader))
         {
             tarFile._members[mp.member.filename] = mp;
             debug(tar)
@@ -936,8 +1012,10 @@ public:
             }
         }
 
-        auto fileOutput = FileOutputRange(tarFile._file, reader.position);
-        tarFile._tarWriter = tarWriter(fileOutput);
+        debug(tar)
+            writefln("Position: %d, Size: %d", reader.position, tarFile._file.size);
+        tarFile._file.seek(reader.position);
+        tarFile._tarWriter = tarWriter(tarFile._file.lockingBinaryWriter);
 
         return tarFile;
     }
@@ -961,9 +1039,12 @@ public:
         return _file.size();
     }
 
-    private void[] readContentAt(size_t pos, size_t size)
+    private ubyte[] readContentAt(size_t pos, size_t size)
     {
-        void[] buf = new ubyte[size];
+        if (size == 0)
+            return [];
+
+        ubyte[] buf = new ubyte[size];
 
         immutable prevPos = _file.tell();
         _file.seek(pos);
@@ -1005,80 +1086,17 @@ public:
 
     void extract(string memberFilename, string destPath = ".")
     {
-        if (destPath.length == 0)
-            destPath = ".";
-
-        import std.path : isValidPath, exists, isDir, buildPath;
-        if (!isValidPath(destPath) || (exists(destPath) && !isDir(destPath)))
-            throw new TarException("Invalid destination path: '" ~ destPath ~ "'");
-
         auto mp = (memberFilename in _members);
         assert(mp !is null);
 
-        TarMember member = mp.member;
+        ubyte[] content = readContentAt(mp.position, mp.member.size);
 
-        import std.path : dirName, baseName;
-        import std.file : write, mkdirRecurse;
-
-        immutable fullPath = buildPath(destPath, member.filename);
-        destPath = buildPath(destPath, dirName(member.filename));
-
-        if (exists(fullPath))
-            return;
-
-        mkdirRecurse(destPath);
-
-        debug(tar) writeln("Destination: ", fullPath);
-
-        import std.string : toStringz;
-        immutable fullPathC = fullPath.toStringz;
-
-        if (member.fileType == FileType.directory)
-        {
-            import core.sys.posix.sys.stat : mkdir;
-            mkdir(fullPathC, member.mode).enforceSuccess;
-        }
-        else if (member.fileType == FileType.symbolicLink)
-        {
-            import core.sys.posix.unistd : symlink;
-            symlink(member.linkedToFilename.toStringz, fullPathC).enforceSuccess;
-        }
-        else
-        {
-            immutable mode = FileStat.posixFileMode(member.mode, member.fileType);
-            immutable devNumber = FileStat.makeDeviceNumber(
-                member.deviceMajorNumber, member.deviceMinorNumber);
-
-            import core.sys.posix.sys.stat : mknod;
-            mknod(fullPathC, mode, devNumber).enforceSuccess;
-        }
-
-        if (member.size > 0)
-        {
-            auto content = readContentAt(mp.position, mp.member.size);
-            write(fullPath, content);
-        }
-
-        import core.sys.posix.unistd : lchown;
-        lchown(fullPathC, member.userId, member.groupId).enforceSuccess;
-
-        auto stat = FileStat(fullPath);
-
-        import core.sys.posix.sys.time;
-        import core.sys.posix.sys.stat : utimensat;
-
-        timespec[2] newTime;
-        newTime[0].tv_sec = stat.accessTime();
-        newTime[1].tv_sec = member.modificationTime.toUnixTime();
-
-        import core.sys.posix.fcntl : AT_FDCWD, AT_SYMLINK_NOFOLLOW;
-
-        utimensat(AT_FDCWD, fullPathC, newTime, AT_SYMLINK_NOFOLLOW).enforceSuccess;
+        .extract(mp.member, content, destPath);
     }
 
     void extractAll(string destPath = ".")
     {
-        import std.algorithm.iteration :  each;
+        import std.algorithm.iteration : each;
         _members.byKey.each!(filename => extract(filename, destPath));
     }
 }
