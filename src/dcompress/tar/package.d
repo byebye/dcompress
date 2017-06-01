@@ -3,6 +3,8 @@
  +/
 module dcompress.tar;
 
+import dcompress.tar.internal;
+
 debug = tar;
 
 debug(tar)
@@ -10,90 +12,7 @@ debug(tar)
     import std.stdio;
 }
 
-// tar Header Block, from POSIX 1003.1-1990.
-
-void assignAndZeroTrailing(size_t N)(ref char[N] arr, string s)
-in
-{
-    assert(arr.length > s.length);
-}
-body
-{
-    arr[0 .. s.length] = s;
-    arr[s.length .. $] = '\0';
-}
-
-// The filename, linkFilename, magic, userName, and groupName are null-
-// terminated character strings. All other fields are zero-filled octal numbers
-// in ASCII. Each numeric field of width w contains w minus 1 digits, and a
-// null.
-struct TarHeader
-{
-    char[100] filename = '\0';
-    // Provides nine bits specifying file permissions and three bits to specify
-    // the Set UID, Set GID, and Save Text (sticky) modes. Values for these bits
-    // are defined above. When special permissions are required to create a file
-    // with a given mode, and the user restoring files from the archive does not
-    // hold such permissions, the mode bit(s) specifying those special
-    // permissions are ignored. Modes which are not supported by the operating
-    // system restoring files from the archive will be ignored. Unsupported
-    // modes should be faked up when creating or updating an archive; e.g., the
-    // group permission could be copied from the other permission.
-    char[8] mode = '\0';
-    // The uid and gid fields are the numeric user and group ID of the file
-    // owners, respectively. If the operating system does not support numeric
-    // user or group IDs, these fields should be ignored.
-    char[8] userId = '\0';
-    char[8] groupId = '\0';
-    // The ASCII representation of the octal value of size of the file in bytes;
-    // linked files are archived with this field specified as zero.
-    char[12] size = '\0';
-    // The data modification time of the file at the time it was archived. It is
-    // the ASCII representation of the octal value of the last time the file's
-    // contents were modified, represented as an integer number of seconds since
-    // January 1, 1970, 00:00 Coordinated Universal Time.
-    char[12] modificationTime = '\0';
-    // The ASCII representation of the octal value of the simple sum of all
-    // bytes in the header block. Each 8-bit byte in the header is added to an
-    // unsigned integer, initialized to zero, the precision of which shall be no
-    // less than seventeen bits. When calculating the checksum, the `checksum`
-    // field is treated as if it were all blanks.
-    char[8] checksum = '\0';
-    // Specifies the type of file archived. If a particular implementation does
-    // not recognize or permit the specified type, the file will be extracted as
-    // if it were a regular file. As this action occurs, tar issues a warning to
-    // the standard error.
-    char[1] fileTypeFlag = '\0';
-    char[100] linkedToFilename = '\0';
-    // Indicates that this archive was output in the P1003 archive format. If
-    // this field contains `"ustar"` string, the `userName` and `groupName`
-    // fields will contain the ASCII representation of the owner and group of
-    // the file respectively.
-    char[6] magic = "ustar ";
-    char[2] tarVersion = " \0";
-    char[32] userName = '\0';
-    char[32] groupName = '\0';
-    char[8] deviceMajorNumber = '\0';
-    char[8] deviceMinorNumber = '\0';
-    char[155] prefix = '\0';
-    char[12] padding = '\0';
-
-
-    static size_t calculateChecksum(TarHeader header)
-    {
-        header.checksum[0 .. $] = ' ';
-        auto bytes = cast(ubyte[]) header.asBytes;
-        import std.algorithm.iteration : sum;
-        return bytes.sum;
-    }
-};
-
-static assert(TarHeader.sizeof == 512);
-
-immutable magicString = "ustar\0";
-immutable versionString = "00";
-
-/// Values used in `TarHeader.fileTypeFlag` field.
+/// File types supported by tar format.
 enum FileType : char
 {
     regular = '0',
@@ -136,16 +55,36 @@ enum FileType : char
     //extendedHeaderGlobal = 'g',
 }
 
-string toString(T)(auto ref T value)
+/// Type of the file.
+FileType fileTypeFromStat(uint fileTypeMask)
 {
-    import std.format : formattedWrite;
-    import std.array : appender;
-    auto writer = appender!string();
-    foreach (i, ref field; value.tupleof)
+    import core.sys.posix.sys.stat;
+    switch (fileTypeMask)
     {
-        formattedWrite(writer, "%s: '%s'\n", __traits(identifier, value.tupleof[i]), field);
+        case S_IFREG: return FileType.regular;
+        case S_IFDIR: return FileType.directory;
+        case S_IFLNK: return FileType.symbolicLink;
+        case S_IFBLK: return FileType.blockSpecial;
+        case S_IFCHR: return FileType.characterSpecial;
+        case S_IFIFO: return FileType.fifoSpecial;
+        default: assert(0, "Unsupported file type.");
     }
-    return writer.data;
+}
+
+uint fileTypeToStatMode(FileType fileType)
+{
+    import core.sys.posix.sys.stat;
+    final switch (fileType)
+    {
+        case FileType.regular: return S_IFREG;
+        case FileType.regularCompatibility: return S_IFREG;
+        case FileType.hardLink: return S_IFREG;
+        case FileType.directory: return S_IFDIR;
+        case FileType.symbolicLink: return S_IFLNK;
+        case FileType.blockSpecial: return S_IFBLK;
+        case FileType.characterSpecial: return S_IFCHR;
+        case FileType.fifoSpecial: return S_IFIFO;
+    }
 }
 
 /// Bits used in the `TarHeader.mode` field, values in octal.
@@ -207,18 +146,18 @@ class TarException : Exception
     }
 }
 
-T octalParse(T)(char[] slice)
+void enforceSuccess(int status)
 {
-    import std.conv : parse;
-    return parse!T(slice, 8);
-}
+    if (status == 0)
+        return;
 
-const(void)[] asBytes(T)(ref T value)
-{
-    return (cast(void*) &value)[0 .. T.sizeof];
-}
+    import std.string : fromStringz;
+    import core.stdc.string : strerror;
+    import core.stdc.errno;
 
-import std.stdio;
+    string msg = fromStringz(strerror(errno)).idup;
+    throw new TarException(msg);
+}
 
 struct TarMember
 {
@@ -235,379 +174,165 @@ struct TarMember
     string groupName;
     uint deviceMajorNumber;
     uint deviceMinorNumber;
-    SysTime modificationTime;
+    private SysTime _modificationTime;
 
-    this(TarHeader header)
+    @property void modificationTime(long unixTime)
+    {
+        _modificationTime = SysTime.fromUnixTime(unixTime);
+    }
+
+    @property void modificationTime(SysTime time)
+    {
+        _modificationTime = time;
+    }
+
+    @property SysTime modificationTime() const
+    {
+        return _modificationTime;
+    }
+
+    static TarMember fromTarHeader(TarHeader header)
     {
         import std.string : fromStringz;
         import std.path : buildNormalizedPath, isValidPath;
 
-        filename = buildNormalizedPath(
+        TarMember member;
+
+        member.filename = buildNormalizedPath(
             fromStringz(header.prefix.ptr), fromStringz(header.filename.ptr));
 
-        assert(filename.isValidPath);
+        assert(member.filename.isValidPath);
 
-        linkedToFilename = fromStringz(header.linkedToFilename.ptr).idup;
+        member.linkedToFilename = fromStringz(header.linkedToFilename.ptr).idup;
 
         import std.conv : to;
-        fileType = to!FileType(header.fileTypeFlag[0]);
+        member.fileType = to!FileType(header.fileTypeFlag[0]);
 
-        size = octalParse!size_t(header.size[]);
-        mode = octalParse!uint(header.mode[]);
-        userId = octalParse!uint(header.userId[]);
-        groupId = octalParse!uint(header.groupId[]);
+        T octalParse(T)(char[] slice)
+        {
+            import std.conv : parse;
+            return parse!T(slice, 8);
+        }
 
-        userName = fromStringz(header.userName.ptr).idup;
-        groupName = fromStringz(header.groupName.ptr).idup;
+        member.size = octalParse!size_t(header.size);
+        member.mode = octalParse!uint(header.mode);
+        member.userId = octalParse!uint(header.userId);
+        member.groupId = octalParse!uint(header.groupId);
 
-        deviceMajorNumber = octalParse!uint(header.deviceMajorNumber[]);
-        deviceMinorNumber = octalParse!uint(header.deviceMinorNumber[]);
+        member.userName = fromStringz(header.userName.ptr).idup;
+        member.groupName = fromStringz(header.groupName.ptr).idup;
 
-        auto unixTime = octalParse!long(header.modificationTime[]);
-        modificationTime = SysTime.fromUnixTime(unixTime);
+        member.deviceMajorNumber = octalParse!uint(header.deviceMajorNumber);
+        member.deviceMinorNumber = octalParse!uint(header.deviceMinorNumber);
+
+        member.modificationTime = octalParse!long(header.modificationTime);
+
+        return member;
     }
 
-    TarHeader toTarHeader() const
+    static TarMember fromFile(string filename)
     {
-        TarHeader header;
+        import dcompress.file : FileStat;
+        auto stat = FileStat(filename);
 
-        assert (filename.length < header.filename.sizeof + header.prefix.sizeof);
-
-        string withTrailingSlash(string path)
+        TarMember member;
+        member.filename = filename;
+        member.fileType = fileTypeFromStat(stat.fileType());
+        if (member.fileType == FileType.regular ||
+            member.fileType == FileType.regularCompatibility ||
+            member.fileType == FileType.hardLink)
+            member.size = stat.size();
+        if (member.fileType == FileType.symbolicLink)
         {
-            if (path.length == 0 || path[$ - 1] == '/')
-                return path;
-            return path ~= "/";
+            import std.file : readLink;
+            member.linkedToFilename = readLink(filename);
+        }
+        member.userId = stat.userId();
+        member.groupId = stat.groupId();
+        member.userName = stat.userName();
+        member.groupName = stat.groupName();
+        member.mode = stat.mode();
+        if (member.fileType == FileType.characterSpecial ||
+            member.fileType == FileType.blockSpecial)
+        {
+            member.deviceMajorNumber = stat.deviceMajorNumber;
+            member.deviceMinorNumber = stat.deviceMinorNumber;
         }
 
-        if (filename.length >= header.filename.sizeof)
-        {
-            import std.path : dirName, baseName;
-            auto dir = withTrailingSlash(filename.dirName);
-            auto base = filename.baseName;
-            if (fileType == FileType.directory)
-                base = withTrailingSlash(base);
+        member.modificationTime = stat.modificationTime;
 
-            assert (dir.length < header.prefix.sizeof && base.length < header.filename.sizeof);
-
-            header.prefix.assignAndZeroTrailing(dir);
-            header.filename.assignAndZeroTrailing(base);
-        }
-        else
-        {
-            auto f = (fileType == FileType.directory) ? withTrailingSlash(filename) : filename;
-            header.filename.assignAndZeroTrailing(f);
-        }
-
-        header.linkedToFilename.assignAndZeroTrailing(linkedToFilename);
-
-        header.fileTypeFlag[0] = fileType;
-
-        void octalFormat(T)(char[] dest, T n)
-        {
-            import std.format : sformat;
-            // Size == 5 is sufficient - 1 or 2 digits only
-            char[5] fmt;
-            sformat(fmt, "%%0%02do", dest.length - 1);
-            sformat(dest, fmt, n);
-        }
-
-        octalFormat(header.size[], size);
-        octalFormat(header.mode[], mode);
-        octalFormat(header.userId[], userId);
-        octalFormat(header.groupId[], groupId);
-
-        header.userName.assignAndZeroTrailing(userName);
-        header.groupName.assignAndZeroTrailing(groupName);
-
-        if (fileType == FileType.characterSpecial || fileType == FileType.blockSpecial)
-        {
-            octalFormat(header.deviceMajorNumber[], deviceMajorNumber);
-            octalFormat(header.deviceMinorNumber[], deviceMinorNumber);
-        }
-
-        auto unixTime = modificationTime.toUnixTime();
-        octalFormat(header.modificationTime[], unixTime);
-
-        octalFormat(header.checksum[0 .. $ - 1], TarHeader.calculateChecksum(header));
-        header.checksum[$ - 1] = ' ';
-
-        return header;
-    }
-
-    static void[] asTarBytes(TarMember member, void[] content)
-    in
-    {
-        assert(member.size == content.length);
-    }
-    body
-    {
-        immutable blockSize = TarHeader.sizeof;
-        immutable size = (blockSize + member.size).roundUpToMultiple(blockSize);
-        auto buf = new ubyte[size];
-        auto header = member.toTarHeader();
-        import std.algorithm.mutation : copy;
-        auto bufRem = copy(cast(ubyte[]) header.asBytes, buf);
-        copy(cast(ubyte[]) content, bufRem);
-        return buf;
-    }
-
-    void toString(scope void delegate(const(char)[]) sink)
-    {
-        import std.conv : to;
-        foreach (i, ref field; this.tupleof)
-        {
-            sink(__traits(identifier, this.tupleof[i]));
-            sink(": ");
-            sink(to!string(field));
-            sink("\n");
-        }
+        return member;
     }
 }
 
-T roundUpToMultiple(T)(T value, T roundValue)
+TarHeader toTarHeader()(const auto ref TarMember member)
 {
-    return ((value + roundValue - 1) / roundValue) * roundValue;
-}
+    TarHeader header;
 
-enum isPredicate(alias pred, T) = __traits(compiles, (T t) { if (pred(t)) {} });
+    assert(member.filename.length < header.filename.sizeof + header.prefix.sizeof);
 
-static void enforceSuccess(int status)
-{
-    if (status == 0)
-        return;
-
-    import std.string : fromStringz;
-    import core.stdc.string : strerror;
-    import core.stdc.errno;
-
-    string msg = fromStringz(strerror(errno)).idup;
-    throw new TarException(msg);
-}
-
-struct FileStat
-{
-    import core.sys.posix.sys.stat;
-    import std.string : fromStringz;
-
-    stat_t _stat;
-
-    @disable this();
-
-    this(string filename)
+    string withTrailingSlash(string path)
     {
-        import std.string : toStringz;
-        this(filename.toStringz);
+        if (path.length == 0 || path[$ - 1] == '/')
+            return path;
+        return path ~= "/";
     }
 
-    this(const(char)* filename)
+    if (member.filename.length >= header.filename.sizeof)
     {
-        lstat(filename, &_stat);
+        import std.path : dirName, baseName;
+        auto dir = withTrailingSlash(member.filename.dirName);
+        auto base = member.filename.baseName;
+        if (member.fileType == FileType.directory)
+            base = withTrailingSlash(base);
+
+        assert (dir.length < header.prefix.sizeof && base.length < header.filename.sizeof);
+
+        header.prefix.assignAndZeroTrailing(dir);
+        header.filename.assignAndZeroTrailing(base);
+    }
+    else
+    {
+        auto f = (member.fileType == FileType.directory) ?
+            withTrailingSlash(member.filename) : member.filename;
+        header.filename.assignAndZeroTrailing(f);
     }
 
-    /// Type of the file.
-    FileType fileType()
+    header.linkedToFilename.assignAndZeroTrailing(member.linkedToFilename);
+
+    header.fileTypeFlag[0] = member.fileType;
+
+    void octalFormat(T)(char[] dest, T n)
     {
-        // TODO Hard links: https://unix.stackexchange.com/questions/43037/dereferencing-hard-links
-        immutable(uint) attrs = _stat.st_mode;
-        immutable fileTypeMask = (attrs & S_IFMT);
-        switch (fileTypeMask)
-        {
-            case S_IFREG: return FileType.regular;
-            case S_IFDIR: return FileType.directory;
-            case S_IFLNK: return FileType.symbolicLink;
-            case S_IFBLK: return FileType.blockSpecial;
-            case S_IFCHR: return FileType.characterSpecial;
-            case S_IFIFO: return FileType.fifoSpecial;
-            default: assert(0, "Unsupported file type.");
-        }
+        import std.format : sformat;
+        // Size == 5 is sufficient - 1 or 2 digits only
+        char[5] fmt;
+        sformat(fmt, "%%0%02do", dest.length - 1);
+        sformat(dest, fmt, n);
     }
 
-    /// Number of hard links to the file.
-    ulong hardLinksCount() const
+    octalFormat(header.size[], member.size);
+    octalFormat(header.mode[], member.mode);
+    octalFormat(header.userId[], member.userId);
+    octalFormat(header.groupId[], member.groupId);
+
+    header.userName.assignAndZeroTrailing(member.userName);
+    header.groupName.assignAndZeroTrailing(member.groupName);
+
+    if (member.fileType == FileType.characterSpecial ||
+        member.fileType == FileType.blockSpecial)
     {
-        return _stat.st_nlink;
+        octalFormat(header.deviceMajorNumber[], member.deviceMajorNumber);
+        octalFormat(header.deviceMinorNumber[], member.deviceMinorNumber);
     }
 
-    /// User ID of file.
-    uint userId() const
-    {
-        return _stat.st_uid;
-    }
+    auto unixTime = member.modificationTime.toUnixTime();
+    octalFormat(header.modificationTime[], unixTime);
 
-    /// User name of file.
-    string userName() const
-    {
-        import core.sys.posix.pwd : passwd, getpwuid_r;
-        //import core.sys.posix.unistd : sysconf, _SC_GETPW_R_SIZE_MAX;
-        //immutable size = sysconf(_SC_GETPW_R_SIZE_MAX);
-        //assert(size != -1);
-        char[1024] buffer = void;
-        passwd pwd;
-        passwd* result;
-        getpwuid_r(groupId(), &pwd, buffer.ptr, buffer.length, &result);
-        assert(result != null);
-        return fromStringz(result.pw_name).idup;
-    }
+    octalFormat(header.checksum[0 .. $ - 1], header.calculateChecksum);
+    header.checksum[$ - 1] = ' ';
 
-    /// Group ID of file.
-    uint groupId() const
-    {
-        return _stat.st_gid;
-    }
-
-    /// File mode - permissions, setgid, setuid and sticky bit.
-    uint mode() const
-    {
-        static immutable mask =
-            (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO);
-        return _stat.st_mode & mask;
-    }
-
-    /// Group name of file.
-    string groupName() const
-    {
-        import core.sys.posix.grp : group, getgrgid_r;
-        //import core.sys.posix.unistd : sysconf, _SC_GETGR_R_SIZE_MAX;
-        //immutable size = sysconf(_SC_GETGR_R_SIZE_MAX);
-        //assert(size != -1);
-        char[1024] buffer = void;
-        group grp;
-        group* result;
-        getgrgid_r(groupId(), &grp, buffer.ptr, buffer.length, &result);
-        assert(result != null);
-        return fromStringz(result.gr_name).idup;
-    }
-
-    /// For regular files, the file size in bytes. For symbolic links, the
-    /// length in bytes of the pathname contained in the symbolic link.
-    ulong size() const
-    {
-        return _stat.st_size;
-    }
-
-    private static immutable(uint) minorBits = 20;
-    private static immutable(uint) minorMask = ((1U << minorBits) - 1);
-
-    static uint makeDeviceNumber(uint major, uint minor)
-    {
-        return (major << minorBits) | minor;
-    }
-
-    static uint fileTypeMode(FileType fileType)
-    {
-        final switch (fileType)
-        {
-            case FileType.regular: return S_IFREG;
-            case FileType.regularCompatibility: return S_IFREG;
-            case FileType.hardLink: return S_IFREG;
-            case FileType.directory: return S_IFDIR;
-            case FileType.symbolicLink: return S_IFLNK;
-            case FileType.blockSpecial: return S_IFBLK;
-            case FileType.characterSpecial: return S_IFCHR;
-            case FileType.fifoSpecial: return S_IFIFO;
-        }
-    }
-
-    static uint posixFileMode(uint mode, FileType fileType)
-    {
-        return mode | FileStat.fileTypeMode(fileType);
-    }
-
-    /// Device ID major number (if file is character or block special).
-    uint deviceMajorNumber() const
-    {
-        return cast(uint) ((_stat.st_rdev) >> minorBits);
-    }
-
-    /// Device ID minor number (if file is character or block special).
-    uint deviceMinorNumber() const
-    {
-        return ((_stat.st_rdev) & minorMask);
-    }
-
-    /// Time of last access.
-    long accessTime() const
-    {
-        return _stat.st_atime;
-    }
-
-    /// Time of last data modification.
-    long modificationTime() const
-    {
-        return _stat.st_mtime;
-    }
-
-    /// Time of last status change.
-    long statusChangeTime() const
-    {
-        return _stat.st_ctime;
-    }
-
-    /// A file system-specific preferred I/O block size for this object. In some
-    /// file system types, this may vary from file to file.
-    long blockSize() const
-    {
-        return _stat.st_blksize;
-    }
-
-    /// Number of blocks allocated for this object.
-    long blockCount() const
-    {
-        return _stat.st_blocks;
-    }
-}
-
-auto chunks(size_t chunkSize, R)(R input)
-if (isInputRange!R)
-{
-    alias E = Unqal!(ElementType!R);
-    struct Chunks
-    {
-    private:
-        E[chunkSize] _buffer;
-        E[] _chunk;
-        R _input;
-
-    public:
-
-        @property E[] front()
-        {
-            return _chunk;
-        }
-
-        @property void popFront()
-        in
-        {
-            assert(!input.empty);
-        }
-        body
-        {
-            auto len = _buffer.length;
-            foreach (i; 0 .. _buffer.length)
-            {
-                _buffer[i] = _input.front;
-                _input.popFront();
-                if (_input.empty)
-                {
-                    break;
-                    len = i;
-                }
-            }
-            _chunk = _buffer[0 .. len];
-        }
-
-        @property bool empty()
-        {
-            return _chunk.length == 0 && _input.empty;
-        }
-    }
-    return Chunks(input);
-}
-
-auto tarReader(bool withContent = true, TarInput)(TarInput input)
-{
-    return TarReader!(TarInput, withContent)(input);
+    return header;
 }
 
 template isTarInput(R)
@@ -618,10 +343,15 @@ template isTarInput(R)
     enum isTarInput = isInputRange!R && is(Unqual!(ElementType!R) == ubyte);
 }
 
+auto tarReader(bool withContent = true, TarInput)(TarInput input)
+if (isTarInput!TarInput)
+{
+    return TarReader!(TarInput, withContent)(input);
+}
+
 import std.typecons : Tuple;
 alias TarMemberWithContent = Tuple!(TarMember, "member", void[], "content");
 alias TarMemberWithPosition = Tuple!(TarMember, "member", size_t, "position");
-
 
 struct TarReader(TarInput, bool withContent = true)
 if (isTarInput!TarInput)
@@ -640,7 +370,6 @@ private:
         TarMemberWithPosition _member;
     }
     bool _empty;
-    static enum _blockSize = TarHeader.sizeof;
 
 public:
 
@@ -688,8 +417,8 @@ public:
         import std.algorithm.mutation : copy;
 
         TarHeader tarHeader;
-        auto headerBytes = cast(ubyte[]) (cast(void*) &tarHeader)[0 .. _blockSize];
-        auto rem = refRange(&_input).take(_blockSize).copy(headerBytes);
+        auto headerBytes = cast(ubyte[]) tarHeader.asBytes;
+        auto rem = refRange(&_input).take(tarBlockSize).copy(headerBytes);
 
         if (headerBytes[0] == '\0')
         {
@@ -700,12 +429,12 @@ public:
             throw new TarException("Not enough bytes for tar header.");
 
         static if (isArray!TarInput)
-            _input = _input[_blockSize .. $];
+            _input = _input[tarBlockSize .. $];
 
-        auto member = TarMember(tarHeader);
+        auto member = TarMember.fromTarHeader(tarHeader);
 
-        assert(TarHeader.calculateChecksum(tarHeader) ==
-            TarHeader.calculateChecksum(member.toTarHeader));
+        assert(tarHeader.calculateChecksum() ==
+            member.toTarHeader.calculateChecksum());
 
         static if (withContent)
         {
@@ -721,12 +450,12 @@ public:
                 static if (isArray!TarInput)
                     _input = _input[content.length .. $];
 
-                auto mod = member.size % _blockSize;
+                auto mod = member.size % tarBlockSize;
                 if (mod > 0)
                 {
                     import std.range.primitives : popFrontN;
-                    auto popped = _input.popFrontN(_blockSize - mod);
-                    assert(popped == _blockSize - mod);
+                    auto popped = _input.popFrontN(tarBlockSize - mod);
+                    assert(popped == tarBlockSize - mod);
                 }
             }
 
@@ -734,13 +463,13 @@ public:
         }
         else
         {
-            _position += _blockSize;
+            _position += tarBlockSize;
             _member = TarMemberWithPosition(member, _position);
             if (member.size > 0)
             {
                 import std.range.primitives : popFrontN;
 
-                auto toDrop = member.size.roundUpToMultiple(_blockSize);
+                auto toDrop = member.size.roundUpToMultiple(tarBlockSize);
                 auto popped = _input.popFrontN(toDrop);
                 assert(popped == toDrop);
                 _position += toDrop;
@@ -749,59 +478,21 @@ public:
     }
 }
 
-private TarMember fileToTarMember(string filename)
-{
-    auto stat = FileStat(filename);
-
-    TarMember member;
-    member.filename = filename;
-    member.fileType = stat.fileType();
-    if (member.fileType == FileType.regular ||
-        member.fileType == FileType.regularCompatibility ||
-        member.fileType == FileType.hardLink)
-        member.size = stat.size();
-    if (member.fileType == FileType.symbolicLink)
-    {
-        import std.file : readLink;
-        member.linkedToFilename = readLink(filename);
-    }
-    member.userId = stat.userId();
-    member.groupId = stat.groupId();
-    member.userName = stat.userName();
-    member.groupName = stat.groupName();
-    member.mode = stat.mode();
-    if (member.fileType == FileType.characterSpecial ||
-        member.fileType == FileType.blockSpecial)
-    {
-        member.deviceMajorNumber = stat.deviceMajorNumber;
-        member.deviceMinorNumber = stat.deviceMinorNumber;
-    }
-    import std.datetime : SysTime;
-    member.modificationTime = SysTime.fromUnixTime(stat.modificationTime);
-
-    return member;
-}
-
-template isTarOutput(R)
-{
-    import std.range.primitives : isOutputRange;
-
-    enum isTarOutput = (isOutputRange!(R, ubyte) || isOutputRange!(R, const(void)[]));
-}
+import dcompress.primitives : isCompressOutput;
 
 TarWriter!TarOutput tarWriter(TarOutput)(TarOutput output)
+if (isCompressOutput!TarOutput)
 {
     return TarWriter!TarOutput(output);
 }
 
 struct TarWriter(TarOutput)
-if (isTarOutput!TarOutput)
+if (isCompressOutput!TarOutput)
 {
 private:
 
     TarOutput _output;
     size_t _writtenBytes;
-    static enum _blockSize = TarHeader.sizeof;
     size_t _blockingFactor = 20; // number of records per block
 
 public:
@@ -818,12 +509,13 @@ public:
 
     void finish()
     {
-        padToMultiple(_blockingFactor * _blockSize);
+        padToMultiple(_blockingFactor * tarBlockSize);
     }
 
     void add(alias memberFilter = (TarMember member) => true)(
         string filename, bool recursive = true)
     {
+        import dcompress.primitives : isPredicate;
         static if (!isPredicate!(memberFilter, TarMember))
             assert(false, "'filter' should be a predicate taking TarMember as an argument.");
 
@@ -847,7 +539,7 @@ public:
         import std.range : only, chain;
 
         only(filename).chain(entries)
-            .map!(name => fileToTarMember(name))
+            .map!(name => TarMember.fromFile(name))
             .filter!(member => memberFilter(member))
             .each!(member => addReadContent(member));
     }
@@ -878,7 +570,7 @@ public:
         import std.range.primitives : put;
         put(_output, cast(ubyte[]) header.asBytes);
 
-        _writtenBytes += _blockSize;
+        _writtenBytes += tarBlockSize;
     }
 
     import dcompress.primitives : isCompressInput;
@@ -895,7 +587,7 @@ public:
 
             _writtenBytes += member.size;
 
-            padToMultiple(_blockSize);
+            padToMultiple(tarBlockSize);
         }
     }
 }
@@ -926,6 +618,7 @@ if (isCompressInput!InR)
 
     debug(tar) writeln("Destination: ", fullPath);
 
+    import dcompress.file : FileStat;
     import std.string : toStringz;
     immutable fullPathC = fullPath.toStringz;
 
@@ -941,7 +634,7 @@ if (isCompressInput!InR)
     }
     else
     {
-        immutable mode = FileStat.posixFileMode(member.mode, member.fileType);
+        immutable mode = (member.mode | fileTypeToStatMode(member.fileType));
         immutable devNumber = FileStat.makeDeviceNumber(
             member.deviceMajorNumber, member.deviceMinorNumber);
 
@@ -985,7 +678,6 @@ private:
 
     File _file;
     TarWriter!(File.BinaryWriterImpl!true) _tarWriter;
-    static enum _blockSize = TarHeader.sizeof;
     size_t _blockingFactor = 20; // number of records per block
 
 public:

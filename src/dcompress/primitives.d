@@ -17,10 +17,4 @@ template isCompressInput(R)
             (is(Unqual!(ElementType!R) == ubyte) || isArray!(ElementType!UR));
 }
 
-template isUbyteInputRange(R)
-{
-    import std.traits : Unqual;
-    import std.range.primitives : isInputRange, ElementType;
-
-    enum isUbyteInputRange = isInputRange!R && is(Unqual!(ElementType!R) == ubyte);
-}
+enum isPredicate(alias pred, T) = __traits(compiles, (T t) { if (pred(t)) {} });

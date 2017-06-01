@@ -145,11 +145,6 @@ void testTarOpen()
     import std.datetime : SysTime;
     member.modificationTime = SysTime.fromUnixTime(13106314744);
     tar.add(member, content);
-    auto stat = FileStat("lib");
-    writeln("GROUP: ", stat.groupName());
-    writeln("USER: ", stat.userName());
-    writefln("MODE: %o", stat.mode());
-    writefln("Size: %d", stat.size());
 }
 
 void testTarAddRecursive()
@@ -240,10 +235,10 @@ void main() {
     //testBz2();
     //bz2();
     //testTarRead();
-    //testTarOpen();
+    testTarOpen();
     //testTarAddRecursive();
     //testTarExtract();
     //testTarWrite();
-    testTarGz();
-    testTarBz2();
+    //testTarGz();
+    //testTarBz2();
 }

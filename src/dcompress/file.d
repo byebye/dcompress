@@ -2,164 +2,148 @@ module dcompress.file;
 
 import std.stdio : File;
 
-
-interface Archive {
-
-    void compress(void[] data, int compressionLevel = 9);
-
-    void decompress(void[] data);
-
-}
-
-/+ File +/
-struct CompressedFile(CompressAlgorithm)
-// if (isCompressAlgorithm!CompressAlgorithm)
+struct FileStat
 {
+    import core.sys.posix.sys.stat;
+    import std.string : fromStringz;
+
 private:
-    import std.stdio : File;
-    File _file;
-    CompressAlgorithm _compress;
-    // byte[] buffer;
+
+    stat_t _stat;
 
 public:
-    this(string filename, in char[] openMode = "rb") @safe
+
+    @disable this();
+
+    this(string filename)
     {
-        _file = File(filename, openMode);
+        import std.string : toStringz;
+        this(filename.toStringz);
     }
 
-    /+
-    this(R1, R2)(R1 name)
-    if (isInputRange!R1 && isSomeChar!(ElementEncodingType!R1))
+    this(const(char)* filename)
     {
-        _file = File(name);
+        lstat(filename, &_stat);
     }
 
-    this(R1, R2)(R1 name, R2 openMode)
-    if (isInputRange!R1 && isSomeChar!(ElementEncodingType!R1)
-        && isInputRange!R2 && isSomeChar!(ElementEncodingType!R2))
+    uint fileType()
     {
-        _file = File(name, openMode);
-    }
-    +/
-
-    void opAssign(CompressedFile rhs) @safe
-    {
-        _file = rhs.file;
-        _compress = rhs._compress;
-    }
-/+
-    void open(string filename, in char[] openMode = "rb") @safe
-    {
-        _file.open(filename, openMode);
+        // TODO Hard links: https://unix.stackexchange.com/questions/43037/dereferencing-hard-links
+        immutable(uint) attrs = _stat.st_mode;
+        return (attrs & S_IFMT);
     }
 
-    void reopen(string name, in char[] stdioOpenmode = "rb") @trusted;
+    /// Number of hard links to the file.
+    ulong hardLinksCount() const
+    {
+        return _stat.st_nlink;
+    }
 
-    @safe void popen(string command, in char[] stdioOpenmode = "r");
+    /// User ID of file.
+    uint userId() const
+    {
+        return _stat.st_uid;
+    }
 
-    @safe void fdopen(int fd, in char[] stdioOpenmode = "rb");
+    /// User name of file.
+    string userName() const
+    {
+        import core.sys.posix.pwd : passwd, getpwuid_r;
+        //import core.sys.posix.unistd : sysconf, _SC_GETPW_R_SIZE_MAX;
+        //immutable size = sysconf(_SC_GETPW_R_SIZE_MAX);
+        //assert(size != -1);
+        char[1024] buffer = void;
+        passwd pwd;
+        passwd* result;
+        getpwuid_r(groupId(), &pwd, buffer.ptr, buffer.length, &result);
+        assert(result != null);
+        return fromStringz(result.pw_name).idup;
+    }
 
-    void windowsHandleOpen(HANDLE handle, in char[] stdioOpenmode);
-+/
-    const pure nothrow @property @safe bool isOpen();
+    /// Group ID of file.
+    uint groupId() const
+    {
+        return _stat.st_gid;
+    }
 
-    const pure @property @trusted bool eof();
+    /// File mode - permissions, setgid, setuid and sticky bit.
+    uint mode() const
+    {
+        static immutable mask =
+            (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO);
+        return _stat.st_mode & mask;
+    }
 
-    const pure nothrow @property @safe string name();
+    /// Group name of file.
+    string groupName() const
+    {
+        import core.sys.posix.grp : group, getgrgid_r;
+        //import core.sys.posix.unistd : sysconf, _SC_GETGR_R_SIZE_MAX;
+        //immutable size = sysconf(_SC_GETGR_R_SIZE_MAX);
+        //assert(size != -1);
+        char[1024] buffer = void;
+        group grp;
+        group* result;
+        getgrgid_r(groupId(), &grp, buffer.ptr, buffer.length, &result);
+        assert(result != null);
+        return fromStringz(result.gr_name).idup;
+    }
 
-//    const pure nothrow @property @trusted bool error();
+    /// For regular files, the file size in bytes. For symbolic links, the
+    /// length in bytes of the pathname contained in the symbolic link.
+    ulong size() const
+    {
+        return _stat.st_size;
+    }
 
-    @safe void detach();
+    private static immutable(uint) minorBits = 20;
+    private static immutable(uint) minorMask = ((1U << minorBits) - 1);
 
-    @trusted void close();
+    static uint makeDeviceNumber(uint major, uint minor)
+    {
+        return (major << minorBits) | minor;
+    }
 
-//    pure nothrow @safe void clearerr();
+    /// Device ID major number (if file is character or block special).
+    uint deviceMajorNumber() const
+    {
+        return cast(uint) ((_stat.st_rdev) >> minorBits);
+    }
 
-    @trusted void flush();
+    /// Device ID minor number (if file is character or block special).
+    uint deviceMinorNumber() const
+    {
+        return ((_stat.st_rdev) & minorMask);
+    }
 
-    @trusted void sync();
-/+
-    T[] rawRead(T)(T[] buffer);
+    /// Time of last access.
+    long accessTime() const
+    {
+        return _stat.st_atime;
+    }
 
-    void rawWrite(T)(in T[] buffer);
+    /// Time of last data modification.
+    long modificationTime() const
+    {
+        return _stat.st_mtime;
+    }
 
-    @trusted void seek(long offset, int origin = SEEK_SET);
+    /// Time of last status change.
+    long statusChangeTime() const
+    {
+        return _stat.st_ctime;
+    }
 
-    const @property @trusted ulong tell();
+    /// A file system-specific preferred I/O block size for this object. In some
+    /// file system types, this may vary from file to file.
+    long blockSize() const
+    {
+        return _stat.st_blksize;
+    }
 
-    @safe void rewind();
-
-    @trusted void setvbuf(size_t size, int mode = _IOFBF);
-
-    @trusted void setvbuf(void[] buf, int mode = _IOFBF);
-
-    void lock(LockType lockType = LockType.readWrite, ulong start = 0, ulong length = 0);
-
-    bool tryLock(LockType lockType = LockType.readWrite, ulong start = 0, ulong length = 0);
-
-    void unlock(ulong start = 0, ulong length = 0);
-
-    void write(S...)(S args);
-
-    void writeln(S...)(S args);
-
-    void writef(alias fmt, A...)(A args)
-    if (isSomeString!(typeof(fmt)));
-
-    void writef(Char, A...)(in Char[] fmt, A args);
-
-    void writefln(alias fmt, A...)(A args)
-    if (isSomeString!(typeof(fmt)));
-
-    void writefln(Char, A...)(in Char[] fmt, A args);
-
-    S readln(S = string)(dchar terminator = '\x0a')
-    if (isSomeString!S);
-
-    size_t readln(C)(ref C[] buf, dchar terminator = '\x0a')
-    if (isSomeChar!C && is(Unqual!C == C) && !is(C == enum));
-
-    size_t readln(C, R)(ref C[] buf, R terminator)
-    if (isSomeChar!C && is(Unqual!C == C) && !is(C == enum) && isBidirectionalRange!R && is(typeof(terminator.front == (dchar).init)));
-
-    uint readf(alias format, Data...)(auto ref Data data)
-    if (isSomeString!(typeof(format)));
-
-    uint readf(Data...)(in char[] format, auto ref Data data);
-
-    static @safe File tmpfile();
-
-    static @safe File wrapFile(FILE* f);
-
-    pure @safe FILE* getFP();
-
-    const @property @trusted int fileno();
-
-    @property HANDLE windowsHandle();
-+/
-    @property @safe ulong size();
-/+
-    auto byLine(Terminator = char, Char = char)(KeepTerminator keepTerminator = No.keepTerminator, Terminator terminator = '\x0a')
-    if (isScalarType!Terminator);
-
-    auto byLine(Terminator, Char = char)(KeepTerminator keepTerminator, Terminator terminator)
-    if (is(Unqual!(ElementEncodingType!Terminator) == Char));
-
-    auto byLineCopy(Terminator = char, Char = immutable(char))(KeepTerminator keepTerminator = No.keepTerminator, Terminator terminator = '\x0a')
-    if (isScalarType!Terminator);
-
-    auto byLineCopy(Terminator, Char = immutable(char))(KeepTerminator keepTerminator, Terminator terminator)
-    if (is(Unqual!(ElementEncodingType!Terminator) == Unqual!Char));
-
-    ByRecord!Fields byRecord(Fields...)(string format);
-
-    ByChunk byChunk(size_t chunkSize);
-
-    ByChunk byChunk(ubyte[] buffer);
-
-    @safe auto lockingTextWriter();
-
-    auto lockingBinaryWriter();
-+/
+    /// Number of blocks allocated for this object.
+    long blockCount() const
+    {
+        return _stat.st_blocks;
+    }
 }
-
