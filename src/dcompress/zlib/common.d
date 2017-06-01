@@ -8,6 +8,8 @@ import c_zlib = etc.c.zlib;
 package struct ZStreamWrapper
 {
     c_zlib.z_stream zlibStream;
+    ProcessingStatus status = ProcessingStatus.needsMoreInput;
+
     ~this()
     {
         c_zlib.deflateEnd(&zlibStream);

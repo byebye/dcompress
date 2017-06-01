@@ -468,13 +468,24 @@ struct Compressor
 {
 private:
 
-    ZStreamWrapper* _zStreamWrapper;
+    import std.typecons : RefCounted, RefCountedAutoInitialize;
+
+    RefCounted!(ZStreamWrapper, RefCountedAutoInitialize.no) _zStreamWrapper;
     CompressionPolicy _policy;
-    ProcessingStatus _status = ProcessingStatus.needsMoreInput;
 
     inout(c_zlib.z_stream)* _zlibStream() inout
     {
         return &_zStreamWrapper.zlibStream;
+    }
+
+    @property ProcessingStatus _status() const
+    {
+        return _zStreamWrapper.status;
+    }
+
+    @property void _status(ProcessingStatus status)
+    {
+        _zStreamWrapper.status = status;
     }
 
 public:
@@ -517,7 +528,8 @@ public:
 
     private this(ref CompressionPolicy policy)
     {
-        _zStreamWrapper = new ZStreamWrapper;
+        _zStreamWrapper.refCountedStore.ensureInitialized;
+
         auto status = c_zlib.deflateInit2(
             _zlibStream,
             policy.compressionLevel,

@@ -137,7 +137,9 @@ struct Compressor
 {
 private:
 
-    BzStreamWrapper!true* _bzStreamWrapper;
+    import std.typecons : RefCounted, RefCountedAutoInitialize;
+
+    RefCounted!(BzStreamWrapper!false, RefCountedAutoInitialize.no) _bzStreamWrapper;
     CompressionPolicy _policy;
 
     size_t totalBytesIn() const
@@ -172,7 +174,7 @@ public:
     static Compressor create(CompressionPolicy policy = CompressionPolicy.default_)
     {
         auto comp = Compressor.init;
-        comp._bzStreamWrapper = new BzStreamWrapper!true;
+        comp._bzStreamWrapper.refCountedStore.ensureInitialized;
         if (policy.buffer.isNull)
             policy.buffer = new ubyte[policy.defaultBufferSize];
         comp._policy = policy;
