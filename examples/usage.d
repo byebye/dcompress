@@ -191,18 +191,44 @@ void testTarGz()
     {
         auto outFile = File("tests/tar_ex.tar.gz", "wb");
         auto inFile = File("tests/tar_ex.tar", "rb");
-        writeln("---------- COMPRESS ----------------");
+        writeln("---------- GZIP COMPRESS ----------------");
         //import std.array : appender;
         //auto output = appender!(ubyte[]);
         auto output = outFile.lockingBinaryWriter;
         auto zlibOutput = zlibOutputRange(output, CompressionPolicy.gzip(new GzipHeader("tar_ex.tar.gz")));
-        inFile.byChunk(1024 * 256).copy(zlibOutput);
+        inFile.byChunk(1024).copy(zlibOutput);
     }
 
     {
-        writeln("---------- DECOMPRESS ----------------");
+        writeln("---------- GZIP DECOMPRESS ----------------");
         auto inFile = File("tests/tar_ex.tar.gz", "rb");
         auto reader = tarReader(inFile.byChunk(4096).zlibInputRange());
+        foreach (mc; reader)
+        {
+            writeln("Member\n", mc.member);
+        }
+    }
+}
+
+void testTarBz2()
+{
+    import dcompress.tar;
+    import dcompress.bz2;
+    import dcompress.primitives;
+
+    {
+        auto outFile = File("tests/tar_ex.tar.bz2", "wb");
+        auto inFile = File("tests/tar_ex.tar", "rb");
+        writeln("---------- BZ2 COMPRESS ----------------");
+        auto output = outFile.lockingBinaryWriter;
+        auto bz2Output = bz2OutputRange(output);
+        inFile.byChunk(1024).copy(bz2Output);
+    }
+
+    {
+        writeln("---------- BZ2 DECOMPRESS ----------------");
+        auto inFile = File("tests/tar_ex.tar.bz2", "rb");
+        auto reader = tarReader(inFile.byChunk(4096).bz2InputRange());
         foreach (mc; reader)
         {
             writeln("Member\n", mc.member);
@@ -219,4 +245,5 @@ void main() {
     //testTarExtract();
     //testTarWrite();
     testTarGz();
+    testTarBz2();
 }

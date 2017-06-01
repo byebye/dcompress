@@ -5,6 +5,28 @@ module dcompress.bz2.common;
 
 import c_bz2 = dcompress.etc.c.bz2;
 
+package struct BzStreamWrapper(bool callEnd)
+{
+    c_bz2.bz_stream bzStream;
+    ProcessingStatus status = ProcessingStatus.idle;
+
+    static if (callEnd)
+    {
+        ~this()
+        {
+            if (status != ProcessingStatus.idle)
+                c_bz2.BZ2_bzCompressEnd(&bzStream);
+        }
+    }
+}
+
+package enum ProcessingStatus
+{
+    idle,
+    running,
+    finishing
+}
+
 package enum Bz2Action
 {
     run = c_bz2.BZ_RUN,

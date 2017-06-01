@@ -27,7 +27,7 @@ private:
 
 public:
 
-    static CompressionPolicy defaultPolicy()
+    static CompressionPolicy default_()
     {
         return CompressionPolicy.init;
     }
@@ -137,15 +137,8 @@ struct Compressor
 {
 private:
 
-    c_bz2.bz_stream _bzStream;
+    BzStreamWrapper!true* _bzStreamWrapper;
     CompressionPolicy _policy;
-    enum Status : ubyte
-    {
-        idle,
-        running,
-        finishing
-    }
-    Status _status = Status.idle;
 
     size_t totalBytesIn() const
     {
@@ -157,20 +150,29 @@ private:
         return (size_t(_bzStream.total_out_hi32) << 32) + _bzStream.total_out_lo32;
     }
 
+    @property inout(c_bz2.bz_stream)* _bzStream() inout
+    {
+        return &_bzStreamWrapper.bzStream;
+    }
+
+    @property ProcessingStatus _status() const
+    {
+        return _bzStreamWrapper.status;
+    }
+
+    @property void _status(ProcessingStatus status)
+    {
+        _bzStreamWrapper.status = status;
+    }
+
 public:
 
     @disable this();
 
-    ~this()
-    {
-        if (_status != Status.idle)
-            c_bz2.BZ2_bzCompressEnd(&_bzStream);
-    }
-
-    static Compressor create(CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+    static Compressor create(CompressionPolicy policy = CompressionPolicy.default_)
     {
         auto comp = Compressor.init;
-
+        comp._bzStreamWrapper = new BzStreamWrapper!true;
         if (policy.buffer.isNull)
             policy.buffer = new ubyte[policy.defaultBufferSize];
         comp._policy = policy;
@@ -190,8 +192,8 @@ public:
 
     @property bool outputPending() const
     {
-        return _status == Status.finishing ||
-            (_status == Status.running && !inputProcessed);
+        return _status == ProcessingStatus.finishing ||
+            (_status == ProcessingStatus.running && !inputProcessed);
     }
 
     @property bool inputProcessed() const
@@ -201,7 +203,7 @@ public:
 
     @property void input(const(void)[] data)
     {
-        if (_status == Status.idle)
+        if (_status == ProcessingStatus.idle)
             initStream();
         _bzStream.next_in = cast(ubyte*) data.ptr;
         _bzStream.avail_in = cast(uint) data.length; // TODO check for overflow
@@ -210,7 +212,7 @@ public:
     private void initStream()
     {
         auto status = c_bz2.BZ2_bzCompressInit(
-            &_bzStream,
+            _bzStream,
             policy.blockSize,
             policy.verbosityLevel,
             policy.workFactor);
@@ -218,7 +220,7 @@ public:
         if (status != Bz2Status.ok)
             throw new Bz2Exception(status);
 
-        _status = Status.running;
+        _status = ProcessingStatus.running;
     }
 
     const(void)[] compress(const(void)[] data)
@@ -245,24 +247,24 @@ public:
 
     private const(void)[] compress(Bz2Action action)
     {
-        if (_status == Status.idle)
+        if (_status == ProcessingStatus.idle)
             return buffer[0 .. 0];
 
         _bzStream.next_out = cast(ubyte*) buffer.ptr;
         _bzStream.avail_out = cast(uint) buffer.length;
 
-        auto status = c_bz2.BZ2_bzCompress(&_bzStream, action);
+        auto status = c_bz2.BZ2_bzCompress(_bzStream, action);
 
         if (status == Bz2Status.streamEnd)
         {
-            _status = Status.idle;
-            status = c_bz2.BZ2_bzCompressEnd(&_bzStream);
+            _status = ProcessingStatus.idle;
+            status = c_bz2.BZ2_bzCompressEnd(_bzStream);
             assert(status == Bz2Status.ok);
         }
         else if (isOk(action, status))
         {
             if (action == Bz2Action.finish)
-                _status = Status.finishing;
+                _status = ProcessingStatus.finishing;
         }
         else
         {
@@ -294,7 +296,7 @@ public:
  +
  + Throws: `Bz2Exception` if any error occurs.
  +/
-void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy.default_)
 {
     debug(bz2) writeln("compress(void[])");
 
@@ -345,7 +347,7 @@ import std.traits : isArray;
  +
  + Throws: `Bz2Exception` if any error occurs.
  +/
-void[] compress(InR)(InR data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+void[] compress(InR)(InR data, CompressionPolicy policy = CompressionPolicy.default_)
 if (!isArray!InR && isCompressInput!InR)
 {
     debug(bz2) writeln("compress(InputRange)");
@@ -381,7 +383,7 @@ unittest
 
     import dcompress.test : inputRange;
     auto range = inputRange!"withLength"(cast(ubyte[]) data);
-    auto policy = CompressionPolicy.defaultPolicy;
+    auto policy = CompressionPolicy.default_;
     // Provide enough room to copy data to.
     policy.maxInputChunkSize = 1024 ^^ 3;
     auto output = compress(range, policy);
@@ -425,7 +427,7 @@ unittest
  +
  + Throws: `Bz2Exception` if any error occurs.
  +/
-void compress(OutR)(const(void)[] data, ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+void compress(OutR)(const(void)[] data, ref OutR output, CompressionPolicy policy = CompressionPolicy.default_)
 if (isCompressOutput!OutR)
 {
     debug(bz2) writeln("compress(void[], OutputRange)");
@@ -485,7 +487,7 @@ unittest
  +
  + Throws: `Bz2Exception` if any error occurs.
  +/
-void compress(InR, OutR)(InR data, ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+void compress(InR, OutR)(InR data, ref OutR output, CompressionPolicy policy = CompressionPolicy.default_)
 if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
 {
     debug(bz2) writeln("compress(InputRange, OutputRange)");
@@ -630,4 +632,60 @@ if (isCompressOutput!OutR)
             put(output, cast(const(ubyte)[]) comp.flush());
         }
     } while (comp.outputPending);
+}
+
+
+/++
+ + Helper function constructing `Bz2OutputRange`.
+ +/
+Bz2OutputRange!OutR bz2OutputRange(OutR)(
+    auto ref OutR output, CompressionPolicy policy = CompressionPolicy.default_)
+{
+    return Bz2OutputRange!OutR(output, policy);
+}
+
+/++
+ + Compresses data on the fly and outputs it into the given output range.
+ +/
+struct Bz2OutputRange(OutR)
+if (isCompressOutput!OutR)
+{
+
+private:
+
+    OutR _output;
+    Compressor _comp;
+
+public:
+
+    this()(auto ref OutR output, CompressionPolicy policy = CompressionPolicy.default_)
+    {
+        _output = output;
+        _comp = Compressor.create(policy);
+    }
+
+    ~this()
+    {
+        finish();
+    }
+
+    void finish()
+    {
+        _comp.flushAll(_output);
+    }
+
+    import std.range : isInputRange;
+    import std.traits : hasIndirections;
+
+    @property void put(T)(T value)
+    if (!hasIndirections!T && !isInputRange!T)
+    {
+        put((&value)[0 .. 1]);
+    }
+
+    @property void put(T)(in T[] input)
+    if (!hasIndirections!T && !isInputRange!T)
+    {
+        _comp.compressAll(input, _output);
+    }
 }

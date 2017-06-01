@@ -27,7 +27,7 @@ private:
 
 public:
 
-    static DecompressionPolicy defaultPolicy()
+    static DecompressionPolicy default_()
     {
         return DecompressionPolicy.init;
     }
@@ -117,14 +117,8 @@ struct Decompressor
 {
 private:
 
-    c_bz2.bz_stream _bzStream;
+    BzStreamWrapper!false* _bzStreamWrapper;
     DecompressionPolicy _policy;
-    enum Status : ubyte
-    {
-        idle,
-        running,
-    }
-    Status _status = Status.idle;
 
     size_t totalBytesIn() const
     {
@@ -136,20 +130,29 @@ private:
         return (size_t(_bzStream.total_out_hi32) << 32) + _bzStream.total_out_lo32;
     }
 
+    @property inout(c_bz2.bz_stream)* _bzStream() inout
+    {
+        return &_bzStreamWrapper.bzStream;
+    }
+
+    @property ProcessingStatus _status() const
+    {
+        return _bzStreamWrapper.status;
+    }
+
+    @property void _status(ProcessingStatus status)
+    {
+        _bzStreamWrapper.status = status;
+    }
+
 public:
 
     @disable this();
 
-    ~this()
-    {
-        if (_status != Status.idle)
-            c_bz2.BZ2_bzDecompressEnd(&_bzStream);
-    }
-
-    static Decompressor create(DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+    static Decompressor create(DecompressionPolicy policy = DecompressionPolicy.default_)
     {
         auto decomp = Decompressor.init;
-
+        decomp._bzStreamWrapper = new BzStreamWrapper!false;
         if (policy.buffer.isNull)
             policy.buffer = new ubyte[policy.defaultBufferSize];
         decomp._policy = policy;
@@ -170,7 +173,7 @@ public:
     @property bool outputPending() const
     {
         writeln("pending: ", _status);
-        return _status == Status.running;
+        return _status == ProcessingStatus.running;
     }
 
     @property bool inputProcessed() const
@@ -181,7 +184,7 @@ public:
     @property void input(const(void)[] data)
     {
         writeln("input");
-        if (_status == Status.idle)
+        if (_status == ProcessingStatus.idle)
             initStream();
         _bzStream.next_in = cast(ubyte*) data.ptr;
         _bzStream.avail_in = cast(uint) data.length; // TODO check for overflow
@@ -190,14 +193,14 @@ public:
     private void initStream()
     {
         auto status = c_bz2.BZ2_bzDecompressInit(
-            &_bzStream,
+            _bzStream,
             policy.verbosityLevel,
             policy.minimizeMemory);
 
         if (status != Bz2Status.ok)
             throw new Bz2Exception(status);
 
-        _status = Status.running;
+        _status = ProcessingStatus.running;
     }
 
     const(void)[] decompress(const(void)[] data)
@@ -224,26 +227,26 @@ public:
 
     private const(void)[] decompress()
     {
-        if (_status == Status.idle)
+        if (_status == ProcessingStatus.idle)
             return buffer[0 .. 0];
 
         _bzStream.next_out = cast(ubyte*) buffer.ptr;
         _bzStream.avail_out = cast(uint) buffer.length;
 
-        auto status = c_bz2.BZ2_bzDecompress(&_bzStream);
+        auto status = c_bz2.BZ2_bzDecompress(_bzStream);
 
         if (status == Bz2Status.streamEnd)
         {
             if (inputProcessed)
             {
-                status = c_bz2.BZ2_bzDecompressEnd(&_bzStream);
+                status = c_bz2.BZ2_bzDecompressEnd(_bzStream);
                 assert(status == Bz2Status.ok);
-                _status = Status.idle;
+                _status = ProcessingStatus.idle;
             }
             else
             {
                 auto nextStreamData = _bzStream.next_in[0 .. _bzStream.avail_in];
-                status = c_bz2.BZ2_bzDecompressEnd(&_bzStream);
+                status = c_bz2.BZ2_bzDecompressEnd(_bzStream);
                 assert(status == Bz2Status.ok);
                 initStream();
                 input = nextStreamData;
@@ -271,7 +274,7 @@ public:
  +
  + Throws: `Bz2Exception` if any error occurs.
  +/
-void[] decompress(const(void)[] data, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+void[] decompress(const(void)[] data, DecompressionPolicy policy = DecompressionPolicy.default_)
 {
     debug(zlib) writeln("decompress(void[])");
 
@@ -349,7 +352,7 @@ import std.traits : isArray;
  +
  + Throws: `Bz2Exception` if any error occurs.
  +/
-void[] decompress(InR)(InR data, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+void[] decompress(InR)(InR data, DecompressionPolicy policy = DecompressionPolicy.default_)
 if (!isArray!InR && isCompressInput!InR)
 {
     debug(zlib) writeln("decompress(InputRange)");
@@ -392,7 +395,7 @@ unittest
     141, 169, 163, 25, 34, 150, 46, 25, 195, 163, 151, 86, 138, 243, 86, 9, 191,
     139, 185, 34, 156, 40, 72, 113, 234, 243, 221, 0];
 
-    DecompressionPolicy policy = DecompressionPolicy.defaultPolicy;
+    DecompressionPolicy policy = DecompressionPolicy.default_;
 
     import dcompress.test : inputRange;
     // Optimized.
@@ -445,7 +448,7 @@ unittest
  +
  + Throws: `Bz2Exception` if any error occurs.
  +/
-void decompress(OutR)(const(void)[] data, ref OutR output, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+void decompress(OutR)(const(void)[] data, ref OutR output, DecompressionPolicy policy = DecompressionPolicy.default_)
 if (isCompressOutput!OutR)
 {
     debug(zlib) writeln("decompress(void[], OutputRange)");
@@ -506,7 +509,7 @@ unittest
  +
  + Throws: `Bz2Exception` if any error occurs.
  +/
-void decompress(InR, OutR)(InR data, ref OutR output, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+void decompress(InR, OutR)(InR data, ref OutR output, DecompressionPolicy policy = DecompressionPolicy.default_)
 if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
 {
     debug(zlib) writeln("decompress!(InputRange, OutputRange)");
@@ -660,4 +663,112 @@ if (isCompressOutput!OutR)
             put(output, cast(const(ubyte)[]) decomp.flush());
         }
     } while (decomp.outputPending);
+}
+
+
+/++
+ + Helper function constructing `Bz2InputRange`.
+ +/
+Bz2InputRange!InR bz2InputRange(InR)(
+    auto ref InR input, DecompressionPolicy policy = DecompressionPolicy.default_)
+{
+    return Bz2InputRange!InR(input, policy);
+}
+
+struct Bz2InputRange(InR)
+if (isCompressInput!InR)
+{
+private:
+    static if (!isArray!InR)
+    {
+        InR _input;
+        ubyte[] _inputChunk;
+    }
+    Decompressor _comp;
+    const(ubyte)[] _buffer;
+
+public:
+
+    this(InR input, DecompressionPolicy policy = DecompressionPolicy.default_)
+    {
+        _comp = Decompressor.create(policy);
+        static if (isArray!InR)
+        {
+            _comp.input = input;
+        }
+        else
+        {
+            _input = input;
+            import std.range.primitives : hasLength;
+            static if (hasLength!InR)
+            {
+                import std.algorithm.comparison : min;
+                immutable chunkSize = min(_input.length, _comp.policy.maxInputChunkSize);
+            }
+            else
+                immutable chunkSize = _comp.policy.maxInputChunkSize;
+            _inputChunk.length = chunkSize;
+        }
+        updateBuffer();
+    }
+
+    @property bool empty() const
+    {
+        return _buffer.length == 0;
+    }
+
+    @property ubyte front() const
+    in
+    {
+        assert(!empty);
+    }
+    body
+    {
+        return _buffer[0];
+    }
+
+    private void updateBuffer()
+    {
+        static if (isArray!InR)
+        {
+            if (_comp.outputPending)
+                _buffer = cast(const(ubyte)[]) _comp.flush();
+        }
+        else
+        {
+            if (_input.empty)
+            {
+                if (_comp.outputPending)
+                    _buffer = cast(const(ubyte)[]) _comp.flush();
+                return;
+            }
+            else if (!_comp.inputProcessed)
+            {
+                _buffer = cast(const(ubyte)[]) _comp.decompressPending();
+                return;
+            }
+            import std.range : refRange, take;
+            import std.algorithm.mutation : copy;
+            auto rem = refRange(&_input).take(_inputChunk.length).copy(_inputChunk);
+            if (!_input.empty)
+                _buffer = cast(const(ubyte)[]) _comp.decompress(_inputChunk);
+            else
+            {
+                _comp.input = _inputChunk[0 .. $ - rem.length];
+                _buffer = cast(const(ubyte)[]) _comp.flush();
+            }
+        }
+    }
+
+    @property void popFront()
+    in
+    {
+        assert(!empty);
+    }
+    body
+    {
+        _buffer = _buffer[1 .. $];
+        if (_buffer.length == 0)
+            updateBuffer();
+    }
 }
