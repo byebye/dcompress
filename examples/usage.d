@@ -25,7 +25,7 @@ void testZlib()
         c.flush();
     }
     {
-        auto policy = CompressionPolicy.defaultPolicy();
+        auto policy = CompressionPolicy.default_;
         policy.buffer = new ubyte[2];
         auto comp = Compressor.create(policy);
         ubyte[] output;
@@ -196,7 +196,7 @@ void testTarGz()
     import std.array : appender;
     //auto output = appender!(ubyte[]);
     auto output = outFile.lockingBinaryWriter;
-    auto zlibOutput = zlibOutputRange(output, CompressionPolicy.gzipPolicy);
+    auto zlibOutput = zlibOutputRange(output, CompressionPolicy.gzip(new GzipHeader("tar_ex.tar.gz")));
     inFile.byChunk(1024 * 256).copy(zlibOutput);
     //foreach (ubyte[] chunk; inFile.byChunk(4096))
     //    zlibOutput.put(chunk);

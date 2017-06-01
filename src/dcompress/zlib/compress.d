@@ -53,6 +53,87 @@ enum CompressionStrategy
     default_ = c_zlib.Z_DEFAULT_STRATEGY,
 }
 
+struct GzipHeader
+{
+private:
+    c_zlib.gz_header _header;
+    string _filename;
+    string _comment;
+    void[] _data;
+
+public:
+
+    enum FileSystem
+    {
+        fat = 0,
+        amiga = 1,
+        vms = 2,
+        unix = 3,
+        vm = 4,
+        atari = 5,
+        hpfs = 6,
+        mac = 7,
+        zSystem = 8,
+        cpm = 9,
+        tops20 = 10,
+        ntfs = 11,
+        qdos = 12,
+        acorn = 13,
+        unknown = 255,
+    }
+
+    this(string name)
+    {
+        filename = name;
+    }
+
+    @property void isTextFile(bool value)
+    {
+        _header.text = value;
+    }
+
+    @property void modificationTime(long time)
+    {
+        _header.time = time;
+    }
+
+    @property void fileSystem(FileSystem fs)
+    {
+        _header.os = fs;
+    }
+
+    @property void extraData(void[] data)
+    in
+    {
+        assert(data.length < 4 * 1024 ^^ 3);
+    }
+    body
+    {
+        _data = data;
+        _header.extra = cast(byte*) data.ptr;
+        _header.extra_len = cast(int) data.length;
+    }
+
+    @property void filename(string name)
+    {
+        _filename = name;
+        import std.string : toStringz;
+        _header.name = cast(byte*) _filename.toStringz;
+    }
+
+    @property void comment(string comm)
+    {
+        _comment = comm;
+        import std.string : toStringz;
+        _header.comment = cast(byte*) comm.toStringz;
+    }
+
+    @property void includeCrc(bool value)
+    {
+        _header.hcrc = value;
+    }
+}
+
 /++
  + Keeps settings allowing to adjust the compression process.
  +/
@@ -69,6 +150,7 @@ private:
     Nullable!(void[]) _buffer;
     size_t _defaultBufferSize = 1024;
     size_t _maxInputChunkSize = 1024;
+    GzipHeader* _gzipHeader;
 
 public:
 
@@ -88,16 +170,22 @@ public:
      +     $(LI `inputChunkSize = 1024`)
      + )
      +/
-    static CompressionPolicy defaultPolicy()
+    static CompressionPolicy default_()
     {
-         return CompressionPolicy.init;
+        return CompressionPolicy.init;
     }
 
-    static CompressionPolicy gzipPolicy()
+    static CompressionPolicy gzip()(GzipHeader* gzipHeader)
     {
         CompressionPolicy policy;
         policy.header = DataHeader.gzip;
+        policy._gzipHeader = gzipHeader;
         return policy;
+    }
+
+    @property inout(c_zlib.gz_header)* gzipHeader() inout
+    {
+        return &_gzipHeader._header;
     }
 
     /++
@@ -442,10 +530,10 @@ public:
 
     @disable this();
 
-    private this(CompressionPolicy policy)
+    private this(ref CompressionPolicy policy)
     {
         _zStreamWrapper = new ZStreamWrapper;
-        immutable status = c_zlib.deflateInit2(
+        auto status = c_zlib.deflateInit2(
             _zlibStream,
             policy.compressionLevel,
             CompressionMethod.deflate,
@@ -455,6 +543,15 @@ public:
 
         if (status != ZlibStatus.ok)
             throw new ZlibException(status);
+
+        if (policy.header == DataHeader.gzip)
+        {
+            assert(policy.gzipHeader !is null);
+            status = c_zlib.deflateSetHeader(_zlibStream, policy.gzipHeader);
+
+            if (status != ZlibStatus.ok)
+                throw new ZlibException(status);
+        }
     }
 
     /++
@@ -469,7 +566,7 @@ public:
      + Throws: `ZlibException` if unable to initialize the zlib library, e.g.
      +         there is no enough memory or the library version is incompatible.
      +/
-    static Compressor create(CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+    static Compressor create(CompressionPolicy policy = CompressionPolicy.default_)
     in
     {
         assert(policy.header != DataHeader.automatic);
@@ -492,7 +589,7 @@ public:
     {
         debug(zlib) writeln("Compressor.create -- default policy");
         auto comp = Compressor.create();
-        auto policy = CompressionPolicy.defaultPolicy;
+        auto policy = CompressionPolicy.default_;
         assert(policy.buffer.isNull);
         assert(comp.buffer.length == policy.defaultBufferSize);
     }
@@ -504,7 +601,7 @@ public:
     unittest
     {
         debug(zlib) writeln("Compressor.create -- custom buffer on heap");
-        auto policy = CompressionPolicy.defaultPolicy;
+        auto policy = CompressionPolicy.default_;
         auto buffer = new ubyte[10];
         policy.buffer = buffer;
 
@@ -524,7 +621,7 @@ public:
 
         // The previous Compressor's settings should not be modified.
         assert(comp.buffer.ptr == buffer.ptr);
-        assert(comp.policy.compressionLevel == CompressionPolicy.defaultPolicy.compressionLevel);
+        assert(comp.policy.compressionLevel == CompressionPolicy.default_.compressionLevel);
     }
 
     /++
@@ -543,7 +640,7 @@ public:
      +         there is no enough memory or the library version is incompatible.
      +/
     static Compressor createWithSufficientBuffer(size_t inputLength,
-        CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+        CompressionPolicy policy = CompressionPolicy.default_)
     in
     {
         assert(policy.header != DataHeader.automatic);
@@ -599,7 +696,7 @@ public:
         debug(zlib) writeln("Compressor.createWithSufficientBuffer -- do not reallocate large enough buffer");
         auto data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
 
-        auto policy = CompressionPolicy.defaultPolicy;
+        auto policy = CompressionPolicy.default_;
         policy.buffer = new ubyte[200];
         auto comp = Compressor.createWithSufficientBuffer(data.length, policy);
 
@@ -613,7 +710,7 @@ public:
      + Returns: The current compression policy.
      +/
     // TODO Consider returning a reference.
-    @property const(CompressionPolicy) policy() const
+    @property ref const(CompressionPolicy) policy() const
     {
         return _policy;
     }
@@ -626,7 +723,7 @@ public:
      +/
     private @property void[] buffer()
     {
-         return _policy.buffer.get;
+        return _policy.buffer.get;
     }
 
     /++
@@ -652,7 +749,7 @@ public:
         debug(zlib) writeln("Compressor.outputPending");
         auto data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
-        auto policy = CompressionPolicy.defaultPolicy;
+        auto policy = CompressionPolicy.default_;
         // Very small buffer just for presentation purposes.
         policy.buffer = new ubyte[1];
         auto comp = Compressor.create(policy);
@@ -699,7 +796,7 @@ public:
         debug(zlib) writeln("Compressor.bytesPending");
         auto data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
-        auto policy = CompressionPolicy.defaultPolicy;
+        auto policy = CompressionPolicy.default_;
         // Very small buffer just for presentation purposes.
         policy.buffer = new ubyte[1];
         auto comp = Compressor.create(policy);
@@ -744,7 +841,7 @@ public:
         debug(zlib) writeln("Compressor.inputProcessed");
         auto data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
-        auto policy = CompressionPolicy.defaultPolicy;
+        auto policy = CompressionPolicy.default_;
         // Very small buffer just for presentation purposes.
         policy.buffer = new ubyte[1];
         auto comp = Compressor.create(policy);
@@ -769,7 +866,7 @@ public:
         debug(zlib) writeln("Compressor.inputProcessed -- multiple chunks of data");
         auto data = ["Lorem ipsum", " dolor sit amet,", " consectetur", " adipiscing elit. "];
 
-        auto policy = CompressionPolicy.defaultPolicy;
+        auto policy = CompressionPolicy.default_;
         // Very small buffer just for testing purposes.
         policy.buffer = new ubyte[2];
         auto comp = Compressor.create(policy);
@@ -908,7 +1005,7 @@ public:
         debug(zlib) writeln("Compressor.compressPending");
         auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
-        auto policy = CompressionPolicy.defaultPolicy;
+        auto policy = CompressionPolicy.default_;
         // Very small buffer just for testing purposes.
         policy.buffer = new ubyte[1];
         auto comp = Compressor.create(policy);
@@ -975,7 +1072,7 @@ public:
         debug(zlib) writeln("Compressor.flush -- flush mode changed");
         auto data =  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 
-        auto policy = CompressionPolicy.defaultPolicy;
+        auto policy = CompressionPolicy.default_;
         // Very small buffer just for testing purposes.
         policy.buffer = new ubyte[2];
         auto comp = Compressor.create(policy);
@@ -1055,7 +1152,7 @@ private size_t getCompressedSizeBound(ref Compressor comp, size_t inputLength)
  +
  + Throws: `ZlibException` if any error occurs.
  +/
-void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+void[] compress(const(void)[] data, CompressionPolicy policy = CompressionPolicy.default_)
 {
     debug(zlib) writeln("compress!void[]");
 
@@ -1099,7 +1196,7 @@ import std.traits : isArray;
  +
  + Throws: `ZlibException` if any error occurs.
  +/
-void[] compress(InR)(InR data, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+void[] compress(InR)(InR data, CompressionPolicy policy = CompressionPolicy.default_)
 if (!isArray!InR && isCompressInput!InR)
 {
     debug(zlib) writeln("compress!Range");
@@ -1135,7 +1232,7 @@ unittest
 
     import dcompress.test : inputRange;
     auto range = inputRange!"withLength"(cast(ubyte[]) data);
-    auto policy = CompressionPolicy.defaultPolicy;
+    auto policy = CompressionPolicy.default_;
     // Provide enough room to copy data to.
     policy.maxInputChunkSize = 1024 ^^ 3;
     auto output = compress(range, policy);
@@ -1179,7 +1276,7 @@ unittest
  +
  + Throws: `ZlibException` if any error occurs.
  +/
-void compress(OutR)(const(void)[] data, auto ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+void compress(OutR)(const(void)[] data, auto ref OutR output, CompressionPolicy policy = CompressionPolicy.default_)
 if (isCompressOutput!OutR)
 {
     debug(zlib) writeln("compress!(void[], OutputRange)");
@@ -1255,7 +1352,7 @@ unittest
  +
  + Throws: `ZlibException` if any error occurs.
  +/
-void compress(InR, OutR)(InR data, auto ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+void compress(InR, OutR)(InR data, auto ref OutR output, CompressionPolicy policy = CompressionPolicy.default_)
 if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
 {
     debug(zlib) writeln("compress!(InputRange, OutputRange)");
@@ -1403,7 +1500,7 @@ if (isCompressOutput!OutR)
 }
 
 ZlibOutputRange!OutR zlibOutputRange(OutR)(
-    auto ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+    auto ref OutR output, CompressionPolicy policy = CompressionPolicy.default_)
 {
     auto tmp = ZlibOutputRange!OutR(output, policy);
     return tmp;
@@ -1423,7 +1520,7 @@ private:
 
 public:
 
-    this()(auto ref OutR output, CompressionPolicy policy = CompressionPolicy.defaultPolicy)
+    this()(auto ref OutR output, CompressionPolicy policy = CompressionPolicy.default_)
     {
         _output = output;
         _comp = Compressor.create(policy);
@@ -1451,7 +1548,6 @@ public:
     @property void put(T)(in T[] input)
     if (!hasIndirections!T && !isInputRange!T)
     {
-        writeln("Put: ", input.length);
         _comp.compressAll(input, _output);
     }
 }
