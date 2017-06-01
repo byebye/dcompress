@@ -1484,6 +1484,9 @@ if (isCompressOutput!OutR)
     } while (comp.outputPending);
 }
 
+/++
+ + Helper function constructing `ZlibOutputRange`.
+ +/
 ZlibOutputRange!OutR zlibOutputRange(OutR)(
     auto ref OutR output, CompressionPolicy policy = CompressionPolicy.default_)
 {

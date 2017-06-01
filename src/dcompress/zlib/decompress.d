@@ -1041,6 +1041,9 @@ if (isCompressOutput!OutR)
     } while (decomp.outputPending);
 }
 
+/++
+ + Helper function constructing `ZlibInputRange`.
+ +/
 ZlibInputRange!InR zlibInputRange(InR)(
     auto ref InR input, DecompressionPolicy policy = DecompressionPolicy.default_)
 {
