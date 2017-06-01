@@ -41,7 +41,7 @@ public:
      +     $(LI `inputChunkSize = 1024`)
      + )
      +/
-    static DecompressionPolicy defaultPolicy()
+    static DecompressionPolicy default_()
     {
          return DecompressionPolicy.init;
     }
@@ -245,15 +245,14 @@ struct Decompressor
 {
 private:
 
-    c_zlib.z_stream _zlibStream;
+    ZStreamWrapper* _zStreamWrapper;
     DecompressionPolicy _policy;
-    enum Status : ubyte
+    ProcessingStatus _status = ProcessingStatus.needsMoreInput;
+
+    inout(c_zlib.z_stream)* _zlibStream() inout
     {
-        outputPending,
-        needsMoreInput,
-        finished
+        return &_zStreamWrapper.zlibStream;
     }
-    Status _status = Status.needsMoreInput;
 
 public:
 
@@ -261,8 +260,10 @@ public:
 
     private this(DecompressionPolicy policy)
     {
+        _zStreamWrapper = new ZStreamWrapper;
+
         immutable status = c_zlib.inflateInit2(
-            &_zlibStream,
+            _zlibStream,
             policy.windowBitsWithHeader);
 
         if (status != ZlibStatus.ok)
@@ -281,7 +282,7 @@ public:
      + Throws: `ZlibException` if unable to initialize the zlib library, e.g.
      +         there is no enough memory or the library version is incompatible.
      +/
-    static Decompressor create(DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+    static Decompressor create(DecompressionPolicy policy = DecompressionPolicy.default_)
     {
         auto decomp = Decompressor(policy);
 
@@ -299,7 +300,7 @@ public:
     {
         debug(zlib) writeln("Decompressor.create -- default policy");
         auto decomp = Decompressor.create();
-        auto policy = DecompressionPolicy.defaultPolicy;
+        auto policy = DecompressionPolicy.default_;
         assert(policy.buffer.isNull);
         assert(decomp.buffer.length == policy.defaultBufferSize);
     }
@@ -311,7 +312,7 @@ public:
     unittest
     {
         debug(zlib) writeln("Decompressor.create -- custom buffer on heap");
-        auto policy = DecompressionPolicy.defaultPolicy;
+        auto policy = DecompressionPolicy.default_;
         auto buffer = new ubyte[10];
         policy.buffer = buffer;
 
@@ -331,12 +332,7 @@ public:
 
         // The previous Decompressor's settings should not be modified.
         assert(decomp.buffer.ptr == buffer.ptr);
-        assert(decomp.policy.defaultBufferSize == DecompressionPolicy.defaultPolicy.defaultBufferSize);
-    }
-
-    ~this()
-    {
-        c_zlib.inflateEnd(&_zlibStream);
+        assert(decomp.policy.defaultBufferSize == DecompressionPolicy.default_.defaultBufferSize);
     }
 
     /++
@@ -372,7 +368,7 @@ public:
      +/
     @property bool outputPending() const
     {
-        return _status == Status.outputPending;
+        return _status == ProcessingStatus.outputPending;
     }
 
     /++
@@ -387,7 +383,7 @@ public:
             120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
             207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
 
-        auto policy = DecompressionPolicy.defaultPolicy;
+        auto policy = DecompressionPolicy.default_;
         // Very small buffer just for presentation purposes.
         policy.buffer = new ubyte[1];
         auto decomp = Decompressor.create(policy);
@@ -428,7 +424,7 @@ public:
             [120, 156, 243, 201, 47, 74], [205, 85, 200, 44], [40, 46, 205, 85, 72, 201],
             [207, 201, 47, 82], [40, 206, 44, 81, 72, 204, 77, 45], [1, 0, 131, 213, 9, 197]];
 
-        auto policy = DecompressionPolicy.defaultPolicy;
+        auto policy = DecompressionPolicy.default_;
         // Very small buffer just for testing purposes.
         policy.buffer = new ubyte[2];
         auto decomp = Decompressor.create(policy);
@@ -461,7 +457,7 @@ public:
     {
         _zlibStream.next_in = cast(const(ubyte)*) data.ptr;
         _zlibStream.avail_in = cast(uint) data.length; // TODO check for overflow
-        _status = Status.outputPending;
+        _status = ProcessingStatus.outputPending;
     }
 
     /++
@@ -478,7 +474,7 @@ public:
             207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
 
         // Warning: for one-shot decompression enough buffer space needs to be provided.
-        auto policy = DecompressionPolicy.defaultPolicy;
+        auto policy = DecompressionPolicy.default_;
         policy.buffer = new ubyte[uncompressed.length];
 
         auto decomp = Decompressor.create(policy);
@@ -537,7 +533,7 @@ public:
             [207, 201, 47, 82], [40, 206, 44, 81, 72, 204, 77, 45], [1, 0, 131, 213, 9, 197]];
 
         // Provide enough buffer which will fit all the decompressed data.
-        auto policy = DecompressionPolicy.defaultPolicy;
+        auto policy = DecompressionPolicy.default_;
         policy.buffer = new ubyte[uncompressed.length];
         auto decomp = Decompressor.create(policy);
 
@@ -591,7 +587,7 @@ public:
             120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
             207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
 
-        auto policy = DecompressionPolicy.defaultPolicy;
+        auto policy = DecompressionPolicy.default_;
         // Very small buffer just for presentation purposes.
         policy.buffer = new ubyte[5];
         auto decomp = Decompressor.create(policy);
@@ -628,7 +624,7 @@ public:
             120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
             207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
 
-        auto policy = DecompressionPolicy.defaultPolicy;
+        auto policy = DecompressionPolicy.default_;
         // Very small buffer just for presentation purposes.
         policy.buffer = new ubyte[15];
         auto decomp = Decompressor.create(policy);
@@ -644,26 +640,26 @@ public:
     private const(void)[] decompress(FlushMode mode)
     {
         // Nothing to do here.
-        if (_status != Status.outputPending)
+        if (_status != ProcessingStatus.outputPending)
             return buffer[0 .. 0];
 
         _zlibStream.next_out = cast(ubyte*) buffer.ptr;
         _zlibStream.avail_out = cast(uint) buffer.length;
 
-        auto status = c_zlib.inflate(&_zlibStream, mode);
+        auto status = c_zlib.inflate(_zlibStream, mode);
 
         if (status == ZlibStatus.streamEnd)
         {
-            _status = Status.finished;
-            status = c_zlib.inflateReset(&_zlibStream);
+            _status = ProcessingStatus.finished;
+            status = c_zlib.inflateReset(_zlibStream);
             assert(status == ZlibStatus.ok);
         }
         else if (status == ZlibStatus.ok || status == ZlibStatus.bufferError)
         {
             if (_zlibStream.avail_out == 0)
-                _status = Status.outputPending;
+                _status = ProcessingStatus.outputPending;
             else
-                _status = Status.needsMoreInput;
+                _status = ProcessingStatus.needsMoreInput;
         }
         else
         {
@@ -690,7 +686,7 @@ public:
  +
  + Throws: `ZlibException` if any error occurs.
  +/
-void[] decompress(const(void)[] data, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+void[] decompress(const(void)[] data, DecompressionPolicy policy = DecompressionPolicy.default_)
 {
     debug(zlib) writeln("decompress(void[])");
 
@@ -741,7 +737,7 @@ import std.traits : isArray;
  +
  + Throws: `ZlibException` if any error occurs.
  +/
-void[] decompress(InR)(InR data, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+void[] decompress(InR)(InR data, DecompressionPolicy policy = DecompressionPolicy.default_)
 if (!isArray!InR && isCompressInput!InR)
 {
     debug(zlib) writeln("decompress(InputRange)");
@@ -782,7 +778,7 @@ unittest
         120, 156, 243, 201, 47, 74, 205, 85, 200, 44, 40, 46, 205, 85, 72, 201,
         207, 201, 47, 82, 40, 206, 44, 81, 72, 204, 77, 45, 1, 0, 131, 213, 9, 197];
 
-    DecompressionPolicy policy = DecompressionPolicy.defaultPolicy;
+    DecompressionPolicy policy = DecompressionPolicy.default_;
 
     import dcompress.test : inputRange;
     // Optimized.
@@ -833,7 +829,7 @@ unittest
  +
  + Throws: `ZlibException` if any error occurs.
  +/
-void decompress(OutR)(const(void)[] data, ref OutR output, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+void decompress(OutR)(const(void)[] data, ref OutR output, DecompressionPolicy policy = DecompressionPolicy.default_)
 if (isCompressOutput!OutR)
 {
     debug(zlib) writeln("decompress(void[], OutputRange)");
@@ -891,7 +887,7 @@ unittest
  +
  + Throws: `ZlibException` if any error occurs.
  +/
-void decompress(InR, OutR)(InR data, ref OutR output, DecompressionPolicy policy = DecompressionPolicy.defaultPolicy)
+void decompress(InR, OutR)(InR data, ref OutR output, DecompressionPolicy policy = DecompressionPolicy.default_)
 if (!isArray!InR && isCompressInput!InR && isCompressOutput!OutR)
 {
     debug(zlib) writeln("decompress!(InputRange, OutputRange)");
@@ -1043,4 +1039,108 @@ if (isCompressOutput!OutR)
             put(output, cast(const(ubyte)[]) decomp.flush());
         }
     } while (decomp.outputPending);
+}
+
+ZlibInputRange!InR zlibInputRange(InR)(
+    auto ref InR input, DecompressionPolicy policy = DecompressionPolicy.default_)
+{
+    return ZlibInputRange!InR(input, policy);
+}
+
+struct ZlibInputRange(InR)
+if (isCompressInput!InR)
+{
+private:
+    static if (!isArray!InR)
+    {
+        InR _input;
+        ubyte[] _inputChunk;
+    }
+    Decompressor _comp;
+    const(ubyte)[] _buffer;
+
+public:
+
+    this(InR input, DecompressionPolicy policy = DecompressionPolicy.default_)
+    {
+        _comp = Decompressor.create(policy);
+        static if (isArray!InR)
+        {
+            _comp.input = input;
+        }
+        else
+        {
+            _input = input;
+            import std.range.primitives : hasLength;
+            static if (hasLength!InR)
+            {
+                import std.algorithm.comparison : min;
+                immutable chunkSize = min(_input.length, _comp.policy.maxInputChunkSize);
+            }
+            else
+                immutable chunkSize = _comp.policy.maxInputChunkSize;
+            _inputChunk.length = chunkSize;
+        }
+        updateBuffer();
+    }
+
+    @property bool empty() const
+    {
+        return _buffer.length == 0;
+    }
+
+    @property ubyte front() const
+    in
+    {
+        assert(!empty);
+    }
+    body
+    {
+        return _buffer[0];
+    }
+
+    private void updateBuffer()
+    {
+        static if (isArray!InR)
+        {
+            if (_comp.outputPending)
+                _buffer = cast(const(ubyte)[]) _comp.flush();
+        }
+        else
+        {
+            if (_input.empty)
+            {
+                if (_comp.outputPending)
+                    _buffer = cast(const(ubyte)[]) _comp.flush();
+                return;
+            }
+            else if (!_comp.inputProcessed)
+            {
+                _buffer = cast(const(ubyte)[]) _comp.decompressPending();
+                return;
+            }
+            import std.range : refRange, take;
+            import std.algorithm.mutation : copy;
+            auto rem = refRange(&_input).take(_inputChunk.length).copy(_inputChunk);
+            if (!_input.empty)
+                _buffer = cast(const(ubyte)[]) _comp.decompress(_inputChunk);
+            else
+            {
+                _comp.input = _inputChunk[0 .. $ - rem.length];
+                _buffer = cast(const(ubyte)[]) _comp.flush();
+            }
+        }
+    }
+
+    @property void popFront()
+    in
+    {
+        assert(!empty);
+    }
+    body
+    {
+        _buffer = _buffer[1 .. $];
+        if (_buffer.length == 0)
+            updateBuffer();
+    }
 }

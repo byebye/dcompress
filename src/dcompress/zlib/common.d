@@ -5,6 +5,22 @@ module dcompress.zlib.common;
 
 import c_zlib = etc.c.zlib;
 
+package struct ZStreamWrapper
+{
+    c_zlib.z_stream zlibStream;
+    ~this()
+    {
+        c_zlib.deflateEnd(&zlibStream);
+    }
+}
+
+package enum ProcessingStatus
+{
+    outputPending,
+    needsMoreInput,
+    finished
+}
+
 /++
  + Status codes returned by the zlib library.
  +/

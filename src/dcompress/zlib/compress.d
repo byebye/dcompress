@@ -468,24 +468,9 @@ struct Compressor
 {
 private:
 
-    struct ZStreamWrapper
-    {
-        c_zlib.z_stream zlibStream;
-        ~this()
-        {
-            c_zlib.deflateEnd(&zlibStream);
-        }
-    }
-
     ZStreamWrapper* _zStreamWrapper;
     CompressionPolicy _policy;
-    enum Status : ubyte
-    {
-        outputPending,
-        needsMoreInput,
-        finished
-    }
-    Status _status = Status.needsMoreInput;
+    ProcessingStatus _status = ProcessingStatus.needsMoreInput;
 
     inout(c_zlib.z_stream)* _zlibStream() inout
     {
@@ -738,7 +723,7 @@ public:
      +/
     @property bool outputPending() const
     {
-        return _status == Status.outputPending;
+        return _status == ProcessingStatus.outputPending;
     }
 
     /++
@@ -901,7 +886,7 @@ public:
     {
         _zlibStream.next_in = cast(const(ubyte)*) data.ptr;
         _zlibStream.avail_in = cast(uint) data.length; // TODO check for overflow
-        _status = Status.outputPending;
+        _status = ProcessingStatus.outputPending;
     }
 
     /++
@@ -1093,7 +1078,7 @@ public:
     private const(void)[] compress(FlushMode mode)
     {
         // Nothing to do here.
-        if (_status == Status.finished)
+        if (_status == ProcessingStatus.finished)
             return buffer[0 .. 0];
 
         _zlibStream.next_out = cast(ubyte*) buffer.ptr;
@@ -1107,16 +1092,16 @@ public:
 
         if (status == ZlibStatus.streamEnd)
         {
-            _status = Status.finished;
+            _status = ProcessingStatus.finished;
             status = c_zlib.deflateReset(_zlibStream);
             assert(status == ZlibStatus.ok);
         }
         else if (status == ZlibStatus.ok)
         {
             if (_zlibStream.avail_out == 0 && bytesPending > 0)
-                _status = Status.outputPending;
+                _status = ProcessingStatus.outputPending;
             else
-                _status = Status.needsMoreInput;
+                _status = ProcessingStatus.needsMoreInput;
         }
         else
         {
@@ -1502,8 +1487,7 @@ if (isCompressOutput!OutR)
 ZlibOutputRange!OutR zlibOutputRange(OutR)(
     auto ref OutR output, CompressionPolicy policy = CompressionPolicy.default_)
 {
-    auto tmp = ZlibOutputRange!OutR(output, policy);
-    return tmp;
+    return ZlibOutputRange!OutR(output, policy);
 }
 
 /++
