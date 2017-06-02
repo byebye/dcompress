@@ -28,9 +28,7 @@ public:
 
     uint fileType()
     {
-        // TODO Hard links: https://unix.stackexchange.com/questions/43037/dereferencing-hard-links
-        immutable(uint) attrs = _stat.st_mode;
-        return (attrs & S_IFMT);
+        return (_stat.st_mode & S_IFMT);
     }
 
     /// Number of hard links to the file.
@@ -69,9 +67,10 @@ public:
     /// File mode - permissions, setgid, setuid and sticky bit.
     uint mode() const
     {
-        static immutable mask =
-            (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO);
-        return _stat.st_mode & mask;
+        //static immutable mask =
+        //    (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO);
+        //return _stat.st_mode & mask;
+        return _stat.st_mode;
     }
 
     /// Group name of file.

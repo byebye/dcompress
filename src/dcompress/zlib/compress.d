@@ -105,7 +105,7 @@ public:
     @property void extraData(void[] data)
     in
     {
-        assert(data.length < 4 * 1024 ^^ 3);
+        assert(data.length <= uint.max);
     }
     body
     {
@@ -236,7 +236,7 @@ public:
     @property void maxInputChunkSize(size_t newMaxChunkSize)
     in
     {
-        assert(0 < newMaxChunkSize && newMaxChunkSize <= 4 * 1024UL ^^ 3);
+        assert(0 < newMaxChunkSize && newMaxChunkSize <= uint.max);
     }
     body
     {
