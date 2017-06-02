@@ -3,7 +3,7 @@
  +/
 module dcompress.etc.c.bz2;
 
-extern(C) nothrow:
+extern(C) nothrow @nogc:
 
 enum
 {
